@@ -1,0 +1,5 @@
+[App]
+Name=Install SerenityOS
+Executable=/bin/Installer
+RequiresRoot=true
+Category=&Utilities

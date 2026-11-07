@@ -92,6 +92,11 @@ void LoopDevice::start_request(AsyncBlockDeviceRequest& request)
         request.complete(AsyncDeviceRequest::OutOfMemory);
 }
 
+ErrorOr<void> LoopDevice::sync()
+{
+    return m_backing_custody->inode().sync();
+}
+
 bool LoopDevice::can_read(OpenFileDescription const&, u64) const
 {
     return true;

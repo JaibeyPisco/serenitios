@@ -64,6 +64,7 @@ private:
     ErrorOr<void> write_directory(Vector<Ext2FSDirectoryEntry>&);
     ErrorOr<void> populate_lookup_cache();
     ErrorOr<void> resize(u64);
+    ErrorOr<void> remove_block_pointer(BlockBasedFileSystem::BlockIndex);
     ErrorOr<void> write_singly_indirect_block_pointer(BlockBasedFileSystem::BlockIndex logical_block_index, BlockBasedFileSystem::BlockIndex on_disk_index);
     ErrorOr<void> write_doubly_indirect_block_pointer(BlockBasedFileSystem::BlockIndex logical_block_index, BlockBasedFileSystem::BlockIndex on_disk_index);
     ErrorOr<void> write_triply_indirect_block_pointer(BlockBasedFileSystem::BlockIndex logical_block_index, BlockBasedFileSystem::BlockIndex on_disk_index);
@@ -98,6 +99,7 @@ private:
     mutable Ext2FSBlockView m_block_view;
     HashMap<NonnullOwnPtr<KString>, InodeIndex> m_lookup_cache;
     ext2_inode_large m_raw_inode {};
+    Vector<BlockBasedFileSystem::BlockIndex> m_blocks_pending_free;
 };
 
 inline Ext2FS& Ext2FSInode::fs()

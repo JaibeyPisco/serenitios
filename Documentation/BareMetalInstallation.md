@@ -15,6 +15,11 @@ At present there is no real GPU support so don't expect OpenGL, Vulkan nor accel
 
 ## Creating a Serenity GRUB disk image
 
+For an offline, unprivileged x86_64 UEFI disk-image installation from an already
+built ext2 image, see the [functional installer prototype](FunctionalInstaller.md).
+That prototype creates new image files only; it does not install onto physical
+disks or provide recovery.
+
 Before creating a Serenity disk image, you need to build the OS as described in the [SerenityOS build instructions](BuildInstructions.md). Follow those instructions up to and including running **ninja install** (`Meta/serenity.sh image <arch>`).
 After the OS has built, run **ninja grub-uefi-image** (for UEFI systems) or **ninja grub-image** (for legacy BIOS systems) to create a new file called **grub_uefi_disk_image** or **grub_disk_image** with GRUB2 installed that can be booted on a real PC. This command requires `parted` and `grub2` (Arch: `grub`) to be installed.
 

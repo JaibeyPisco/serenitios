@@ -22,6 +22,7 @@ public:
     virtual ~StorageDevicePartition();
 
     virtual void start_request(AsyncBlockDeviceRequest&) override;
+    virtual ErrorOr<void> sync() override;
 
     // ^BlockDevice
     virtual ErrorOr<size_t> read(OpenFileDescription&, u64, UserOrKernelBuffer&, size_t) override;

@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include <AK/Atomic.h>
 #include <AK/AtomicRefCounted.h>
 #include <AK/Error.h>
 #include <AK/StringView.h>
@@ -39,7 +40,7 @@ public:
     // attach them to a loop device.
     virtual bool supports_backing_loop_devices() const { return false; }
 
-    bool is_readonly() const { return m_readonly; }
+    bool is_readonly() const { return m_readonly.load(); }
 
     virtual u64 total_block_count() const { return 0; }
     virtual u64 free_block_count() const { return 0; }
@@ -73,6 +74,7 @@ protected:
 
     void set_logical_block_size(u64 size) { m_logical_block_size = size; }
     void set_fragment_size(size_t size) { m_fragment_size = size; }
+    void set_readonly() { m_readonly.store(true); }
 
     virtual ErrorOr<void> prepare_to_clear_last_mount([[maybe_unused]] Inode& mount_guest_inode) { return {}; }
 
@@ -82,7 +84,7 @@ private:
     FileSystemID m_fsid;
     u64 m_logical_block_size { 0 };
     size_t m_fragment_size { 0 };
-    bool m_readonly { false };
+    Atomic<bool> m_readonly { false };
 
     SpinlockProtected<size_t, LockRank::FileSystem> m_attach_count { 0 };
     IntrusiveListNode<FileSystem> m_file_system_node;

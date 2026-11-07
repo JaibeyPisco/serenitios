@@ -44,13 +44,10 @@ void Inode::sync_all()
     }
 }
 
-void Inode::sync()
+ErrorOr<void> Inode::sync()
 {
-    (void)flush_metadata();
-    auto result = fs().flush_writes();
-    if (result.is_error()) {
-        // TODO: Figure out how to propagate error to a higher function.
-    }
+    TRY(flush_metadata());
+    return fs().flush_writes();
 }
 
 ErrorOr<NonnullRefPtr<Custody>> Inode::resolve_as_link(VFSRootContext const& vfs_root_context, Credentials const& credentials, CustodyBase const& base, RefPtr<Custody>* out_parent, int options, int symlink_recursion_level) const

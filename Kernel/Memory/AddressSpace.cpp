@@ -12,6 +12,7 @@
 #include <Kernel/Memory/AnonymousVMObject.h>
 #include <Kernel/Memory/InodeVMObject.h>
 #include <Kernel/Memory/MemoryManager.h>
+#include <Kernel/Memory/SharedInodeVMObject.h>
 #include <Kernel/Security/Random.h>
 #include <Kernel/Tasks/PerformanceManager.h>
 #include <Kernel/Tasks/PowerStateSwitchTask.h>
@@ -45,7 +46,22 @@ AddressSpace::AddressSpace(NonnullLockRefPtr<PageDirectory> page_directory, Virt
 
 AddressSpace::~AddressSpace() = default;
 
-ErrorOr<void> AddressSpace::unmap_mmap_range(VirtualAddress addr, size_t size)
+DeferredUnmapCleanup::~DeferredUnmapCleanup()
+{
+    for (auto& vmobject : shared_vmobjects)
+        (void)static_cast<SharedInodeVMObject&>(*vmobject).sync_before_destroying();
+}
+
+ErrorOr<void> AddressSpace::ensure_no_pending_page_faults(VirtualRange const& range)
+{
+    for (auto* region : TRY(find_regions_intersecting(range))) {
+        if (region->m_in_progress_page_faults)
+            return EAGAIN;
+    }
+    return {};
+}
+
+ErrorOr<void> AddressSpace::unmap_mmap_range(VirtualAddress addr, size_t size, DeferredUnmapCleanup& cleanup)
 {
     if (!size)
         return EINVAL;
@@ -55,6 +71,23 @@ ErrorOr<void> AddressSpace::unmap_mmap_range(VirtualAddress addr, size_t size)
     if (!is_user_range(range_to_unmap))
         return EFAULT;
 
+    // A fault can have been preempted on this same CPU. Never spin while
+    // holding the address-space lock: release it and let the syscall retry.
+    TRY(ensure_no_pending_page_faults(range_to_unmap));
+    auto intersecting_regions = TRY(find_regions_intersecting(range_to_unmap));
+    TRY(cleanup.regions.try_ensure_capacity(cleanup.regions.size() + intersecting_regions.size()));
+    TRY(cleanup.shared_vmobjects.try_ensure_capacity(cleanup.shared_vmobjects.size() + intersecting_regions.size()));
+    auto retire = [&](Region& region) {
+        auto removed = take_region(region);
+        removed->detach_from_vmobject_for_unmap();
+        removed->unmap(ShouldFlushTLB::Yes);
+        cleanup.regions.unchecked_append(move(removed));
+    };
+    auto defer_partial_sync = [&](Region& region) {
+        if (region.is_writable() && region.vmobject().is_shared_inode())
+            cleanup.shared_vmobjects.unchecked_append(region.vmobject());
+    };
+
     if (auto* whole_region = find_region_from_range(range_to_unmap)) {
         if (!whole_region->is_mmap())
             return EPERM;
@@ -63,7 +96,7 @@ ErrorOr<void> AddressSpace::unmap_mmap_range(VirtualAddress addr, size_t size)
 
         PerformanceManager::add_unmap_perf_event(Process::current(), whole_region->range());
 
-        deallocate_region(*whole_region);
+        retire(*whole_region);
         return {};
     }
 
@@ -73,19 +106,14 @@ ErrorOr<void> AddressSpace::unmap_mmap_range(VirtualAddress addr, size_t size)
         if (old_region->is_immutable())
             return EPERM;
 
-        // Remove the old region from our regions tree, since were going to add another region
-        // with the exact same start address.
-        auto region = take_region(*old_region);
-        region->unmap();
-
-        auto new_regions = TRY(try_split_region_around_range(*region, range_to_unmap));
-
-        // And finally we map the new region(s) using our page directory (they were just allocated and don't have one).
-        for (auto* new_region : new_regions) {
-            // TODO: Ideally we should do this in a way that can be rolled back on failure, as failing here
-            // leaves the caller in an undefined state.
-            TRY(new_region->map(page_directory()));
-        }
+        // Removing the middle needs one additional Region. Prepare it before
+        // changing the tree or any PTEs; removing a prefix/suffix needs none.
+        auto remaining_ranges = old_region->range().carve(range_to_unmap);
+        OwnPtr<Region> trailing_region;
+        if (remaining_ranges.size() == 2)
+            trailing_region = TRY(old_region->try_create_staged_split(remaining_ranges[1]));
+        defer_partial_sync(*old_region);
+        old_region->unmap_subrange(*this, range_to_unmap, move(trailing_region));
 
         PerformanceManager::add_unmap_perf_event(Process::current(), range_to_unmap);
 
@@ -106,30 +134,18 @@ ErrorOr<void> AddressSpace::unmap_mmap_range(VirtualAddress addr, size_t size)
             return EPERM;
     }
 
-    Vector<Region*, 2> new_regions;
-
+    // The intersecting-region list and all validation are complete before any
+    // mappings change. Only the two edge regions can be partial; each retains
+    // one range and therefore needs no new Region allocation during commit.
     for (auto* old_region : regions) {
         // If it's a full match we can remove the entire old region.
         if (old_region->range().intersect(range_to_unmap).size() == old_region->size()) {
-            deallocate_region(*old_region);
+            retire(*old_region);
             continue;
         }
 
-        // Remove the old region from our regions tree, since were going to add another region
-        // with the exact same start address.
-        auto region = take_region(*old_region);
-        region->unmap();
-
-        // Otherwise, split the regions and collect them for future mapping.
-        auto split_regions = TRY(try_split_region_around_range(*region, range_to_unmap));
-        TRY(new_regions.try_extend(split_regions));
-    }
-
-    // And finally map the new region(s) into our page directory.
-    for (auto* new_region : new_regions) {
-        // TODO: Ideally we should do this in a way that can be rolled back on failure, as failing here
-        // leaves the caller in an undefined state.
-        TRY(new_region->map(page_directory()));
+        defer_partial_sync(*old_region);
+        old_region->unmap_subrange(*this, old_region->range().intersect(range_to_unmap), nullptr);
     }
 
     PerformanceManager::add_unmap_perf_event(Process::current(), range_to_unmap);
@@ -258,22 +274,15 @@ Region* AddressSpace::find_region_containing(VirtualRange const& range)
 ErrorOr<Vector<Region*, 4>> AddressSpace::find_regions_intersecting(VirtualRange const& range)
 {
     Vector<Region*, 4> regions = {};
-    size_t total_size_collected = 0;
-
     auto* found_region = m_region_tree.regions().find_largest_not_above(range.base().get());
-    if (!found_region)
-        return regions;
-    for (auto iter = m_region_tree.regions().begin_from(*found_region); !iter.is_end(); ++iter) {
+    auto iter = found_region ? m_region_tree.regions().begin_from(*found_region) : m_region_tree.regions().begin();
+    for (; !iter.is_end(); ++iter) {
         auto const& iter_range = (*iter).range();
         if (iter_range.end() <= range.base())
             continue;
 
         if (iter_range.base() < range.end()) {
             TRY(regions.try_append(&*iter));
-
-            total_size_collected += (*iter).size() - iter_range.intersect(range).size();
-            if (total_size_collected == range.size())
-                break;
         } else {
             // We're iterating the tree in ascending order, so as soon as we reach the
             // first region that is outside the range, we can bail out.

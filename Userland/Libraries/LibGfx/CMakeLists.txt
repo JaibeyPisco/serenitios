@@ -6,6 +6,7 @@ set(SOURCES
     BitmapSequence.cpp
     CMYKBitmap.cpp
     ClassicStylePainter.cpp
+    SerenityStylePainter.cpp
     ClassicWindowTheme.cpp
     Color.cpp
     CursorParams.cpp

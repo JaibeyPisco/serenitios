@@ -26,6 +26,20 @@ ATADevice::ATADevice(AHCIController const& controller, ATA::Address ata_address,
 
 ATADevice::~ATADevice() = default;
 
+ErrorOr<void> ATADevice::sync()
+{
+    auto buffer = UserOrKernelBuffer::for_kernel_buffer(static_cast<u8*>(nullptr));
+    auto request = TRY(try_make_request<AsyncBlockDeviceRequest>(AsyncBlockDeviceRequest::Flush, 0, 0, buffer, 0));
+    switch (request->wait().request_result()) {
+    case AsyncDeviceRequest::Success:
+        return {};
+    case AsyncDeviceRequest::OutOfMemory:
+        return ENOMEM;
+    default:
+        return EIO;
+    }
+}
+
 void ATADevice::start_request(AsyncBlockDeviceRequest& request)
 {
     VERIFY(m_controller);

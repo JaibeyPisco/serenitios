@@ -144,7 +144,7 @@ void AHCIPort::handle_interrupt()
                 dbgln_if(AHCI_DEBUG, "AHCI Port {}: Request handled", representative_port_index());
                 MutexLocker locker(m_lock);
                 VERIFY(m_current_request);
-                VERIFY(m_current_scatter_list);
+                VERIFY(m_current_scatter_list || m_current_request->request_type() == AsyncBlockDeviceRequest::Flush);
                 if (!m_connected_device) {
                     dbgln_if(AHCI_DEBUG, "AHCI Port {}: Request success", representative_port_index());
                     complete_current_request(AsyncDeviceRequest::Failure);
@@ -188,6 +188,12 @@ void AHCIPort::recover_from_fatal_error()
     stop_command_list_processing();
     stop_fis_receiving();
     m_interrupt_enable.clear();
+    if (m_current_request && m_current_request->request_type() == AsyncBlockDeviceRequest::Flush) {
+        m_wait_for_completion = false;
+        lock.unlock();
+        locker.unlock();
+        complete_current_request(AsyncDeviceRequest::Failure);
+    }
 }
 
 bool AHCIPort::reset()
@@ -265,6 +271,9 @@ bool AHCIPort::initialize()
                 physical_sector_size = logical_sector_size << (identify_block->physical_sector_size_to_logical_sector_size & 0xf);
             }
         }
+        m_supports_flush_cache = (identify_block->commands_and_feature_sets_supported[1] & 0xc000) == 0x4000
+            && (identify_block->commands_and_feature_sets_supported[1] & (1 << 12));
+
         // Check if the device supports LBA48 mode
         if (identify_block->commands_and_feature_sets_supported[1] & (1 << 10)) {
             max_addressable_sector = identify_block->user_addressable_logical_sectors_count;
@@ -279,7 +288,11 @@ bool AHCIPort::initialize()
 
         // FIXME: We don't support ATAPI devices yet, so for now we don't "create" them
         if (!is_atapi_attached()) {
-            m_connected_device = MUST(ATADiskDevice::create(*m_parent_controller, { m_port_index, 0 }, 0, logical_sector_size, max_addressable_sector));
+            // IDENTIFY reports a sector count; StorageDevice expects the last
+            // addressable LBA. Passing the count exposes one nonexistent sector.
+            if (max_addressable_sector == 0)
+                return false;
+            m_connected_device = MUST(ATADiskDevice::create(*m_parent_controller, { m_port_index, 0 }, 0, logical_sector_size, max_addressable_sector - 1));
         } else {
             dbgln("AHCI Port {}: Ignoring ATAPI devices as we don't support them.", representative_port_index());
         }
@@ -440,9 +453,12 @@ void AHCIPort::start_request(AsyncBlockDeviceRequest& request)
 
     m_current_request = request;
 
-    auto result = prepare_and_set_scatter_list(request);
+    auto result = request.request_type() == AsyncBlockDeviceRequest::Flush
+        ? (m_supports_flush_cache ? Optional<AsyncDeviceRequest::RequestResult> {} : AsyncDeviceRequest::Failure)
+        : prepare_and_set_scatter_list(request);
     if (result.has_value()) {
         dbgln_if(AHCI_DEBUG, "AHCI Port {}: Request failure.", representative_port_index());
+        m_current_scatter_list = nullptr;
         locker.unlock();
         complete_current_request(result.value());
         return;
@@ -451,6 +467,7 @@ void AHCIPort::start_request(AsyncBlockDeviceRequest& request)
     auto success = access_device(request.request_type(), request.block_index(), request.block_count());
     if (!success) {
         dbgln_if(AHCI_DEBUG, "AHCI Port {}: Request failure.", representative_port_index());
+        m_current_scatter_list = nullptr;
         locker.unlock();
         complete_current_request(AsyncDeviceRequest::Failure);
         return;
@@ -484,9 +501,11 @@ bool AHCIPort::spin_until_ready() const
 bool AHCIPort::access_device(AsyncBlockDeviceRequest::RequestType direction, u64 lba, u8 block_count)
 {
     VERIFY(m_connected_device);
-    VERIFY(is_operable());
+    if (!is_operable())
+        return false;
     VERIFY(m_lock.is_locked());
-    VERIFY(m_current_scatter_list);
+    bool is_flush = direction == AsyncBlockDeviceRequest::Flush;
+    VERIFY(m_current_scatter_list || is_flush);
     SpinlockLocker lock(m_hard_lock);
 
     dbgln_if(AHCI_DEBUG, "AHCI Port {}: Do a {}, lba {}, block count {}", representative_port_index(), direction == AsyncBlockDeviceRequest::RequestType::Write ? "write" : "read", lba, block_count);
@@ -494,46 +513,52 @@ bool AHCIPort::access_device(AsyncBlockDeviceRequest::RequestType direction, u64
         return false;
 
     auto unused_command_header = try_to_find_unused_command_header();
-    VERIFY(unused_command_header.has_value());
+    if (!unused_command_header.has_value())
+        return false;
     auto* command_list_entries = (volatile AHCI::CommandHeader*)m_command_list_region->vaddr().as_ptr();
     command_list_entries[unused_command_header.value()].ctba = m_command_table_pages[unused_command_header.value()]->paddr().get();
     command_list_entries[unused_command_header.value()].ctbau = 0;
     command_list_entries[unused_command_header.value()].prdbc = 0;
-    command_list_entries[unused_command_header.value()].prdtl = m_current_scatter_list->scatters_count();
+    command_list_entries[unused_command_header.value()].prdtl = is_flush ? 0 : m_current_scatter_list->scatters_count();
 
     // Note: we must set the correct Dword count in this register. Real hardware
     // AHCI controllers do care about this field! QEMU doesn't care if we don't
     // set the correct CFL field in this register, real hardware will set an
     // handshake error bit in PxSERR register if CFL is incorrect.
-    command_list_entries[unused_command_header.value()].attributes = (size_t)FIS::DwordCount::RegisterHostToDevice | AHCI::CommandHeaderAttributes::P | (is_atapi_attached() ? AHCI::CommandHeaderAttributes::A : 0) | (direction == AsyncBlockDeviceRequest::RequestType::Write ? AHCI::CommandHeaderAttributes::W : 0);
+    command_list_entries[unused_command_header.value()].attributes = (size_t)FIS::DwordCount::RegisterHostToDevice | (is_flush ? 0 : AHCI::CommandHeaderAttributes::P) | (is_atapi_attached() ? AHCI::CommandHeaderAttributes::A : 0) | (direction == AsyncBlockDeviceRequest::RequestType::Write ? AHCI::CommandHeaderAttributes::W : 0);
 
     dbgln_if(AHCI_DEBUG, "AHCI Port {}: CLE: ctba={:#08x}, ctbau={:#08x}, prdbc={:#08x}, prdtl={:#04x}, attributes={:#04x}", representative_port_index(), (u32)command_list_entries[unused_command_header.value()].ctba, (u32)command_list_entries[unused_command_header.value()].ctbau, (u32)command_list_entries[unused_command_header.value()].prdbc, (u16)command_list_entries[unused_command_header.value()].prdtl, (u16)command_list_entries[unused_command_header.value()].attributes);
 
-    auto command_table_region = MM.allocate_kernel_region_with_physical_pages({ &m_command_table_pages[unused_command_header.value()], 1 }, "AHCI Command Table"sv, Memory::Region::Access::ReadWrite, Memory::MemoryType::IO).release_value();
+    auto command_table_region_or_error = MM.allocate_kernel_region_with_physical_pages({ &m_command_table_pages[unused_command_header.value()], 1 }, "AHCI Command Table"sv, Memory::Region::Access::ReadWrite, Memory::MemoryType::IO);
+    if (command_table_region_or_error.is_error())
+        return false;
+    auto command_table_region = command_table_region_or_error.release_value();
     auto& command_table = *(volatile AHCI::CommandTable*)command_table_region->vaddr().as_ptr();
 
     dbgln_if(AHCI_DEBUG, "AHCI Port {}: Allocated command table at {}", representative_port_index(), command_table_region->vaddr());
 
     memset(const_cast<u8*>(command_table.command_fis), 0, 64);
 
-    size_t scatter_entry_index = 0;
-    size_t data_transfer_count = (block_count * m_connected_device->block_size());
-    for (auto scatter_page : m_current_scatter_list->vmobject().physical_pages()) {
-        VERIFY(data_transfer_count != 0);
-        VERIFY(scatter_page);
-        dbgln_if(AHCI_DEBUG, "AHCI Port {}: Add a transfer scatter entry @ {}", representative_port_index(), scatter_page->paddr());
-        command_table.descriptors[scatter_entry_index].base_high = 0;
-        command_table.descriptors[scatter_entry_index].base_low = scatter_page->paddr().get();
-        if (data_transfer_count <= PAGE_SIZE) {
-            command_table.descriptors[scatter_entry_index].byte_count = data_transfer_count - 1;
-            data_transfer_count = 0;
-        } else {
-            command_table.descriptors[scatter_entry_index].byte_count = PAGE_SIZE - 1;
-            data_transfer_count -= PAGE_SIZE;
+    if (!is_flush) {
+        size_t scatter_entry_index = 0;
+        size_t data_transfer_count = (block_count * m_connected_device->block_size());
+        for (auto scatter_page : m_current_scatter_list->vmobject().physical_pages()) {
+            VERIFY(data_transfer_count != 0);
+            VERIFY(scatter_page);
+            dbgln_if(AHCI_DEBUG, "AHCI Port {}: Add a transfer scatter entry @ {}", representative_port_index(), scatter_page->paddr());
+            command_table.descriptors[scatter_entry_index].base_high = 0;
+            command_table.descriptors[scatter_entry_index].base_low = scatter_page->paddr().get();
+            if (data_transfer_count <= PAGE_SIZE) {
+                command_table.descriptors[scatter_entry_index].byte_count = data_transfer_count - 1;
+                data_transfer_count = 0;
+            } else {
+                command_table.descriptors[scatter_entry_index].byte_count = PAGE_SIZE - 1;
+                data_transfer_count -= PAGE_SIZE;
+            }
+            scatter_entry_index++;
         }
-        scatter_entry_index++;
+        command_table.descriptors[scatter_entry_index].byte_count = (PAGE_SIZE - 1) | (1 << 31);
     }
-    command_table.descriptors[scatter_entry_index].byte_count = (PAGE_SIZE - 1) | (1 << 31);
 
     memset(const_cast<u8*>(command_table.atapi_command), 0, 32);
 
@@ -543,7 +568,9 @@ bool AHCIPort::access_device(AsyncBlockDeviceRequest::RequestType direction, u64
         fis.command = ATA_CMD_PACKET;
         TODO();
     } else {
-        if (direction == AsyncBlockDeviceRequest::RequestType::Write)
+        if (is_flush)
+            fis.command = ATA_CMD_CACHE_FLUSH;
+        else if (direction == AsyncBlockDeviceRequest::RequestType::Write)
             fis.command = ATA_CMD_WRITE_DMA_EXT;
         else
             fis.command = ATA_CMD_READ_DMA_EXT;
@@ -582,7 +609,8 @@ bool AHCIPort::identify_device()
         return false;
 
     auto unused_command_header = try_to_find_unused_command_header();
-    VERIFY(unused_command_header.has_value());
+    if (!unused_command_header.has_value())
+        return false;
     auto* command_list_entries = (volatile AHCI::CommandHeader*)m_command_list_region->vaddr().as_ptr();
     command_list_entries[unused_command_header.value()].ctba = m_command_table_pages[unused_command_header.value()]->paddr().get();
     command_list_entries[unused_command_header.value()].ctbau = 0;
@@ -593,7 +621,10 @@ bool AHCIPort::identify_device()
     // QEMU doesn't care if we don't set the correct CFL field in this register, real hardware will set an handshake error bit in PxSERR register.
     command_list_entries[unused_command_header.value()].attributes = (size_t)FIS::DwordCount::RegisterHostToDevice | AHCI::CommandHeaderAttributes::P;
 
-    auto command_table_region = MM.allocate_kernel_region_with_physical_pages({ &m_command_table_pages[unused_command_header.value()], 1 }, "AHCI Command Table"sv, Memory::Region::Access::ReadWrite, Memory::MemoryType::IO).release_value();
+    auto command_table_region_or_error = MM.allocate_kernel_region_with_physical_pages({ &m_command_table_pages[unused_command_header.value()], 1 }, "AHCI Command Table"sv, Memory::Region::Access::ReadWrite, Memory::MemoryType::IO);
+    if (command_table_region_or_error.is_error())
+        return false;
+    auto command_table_region = command_table_region_or_error.release_value();
     auto& command_table = *(volatile AHCI::CommandTable*)command_table_region->vaddr().as_ptr();
     memset(const_cast<u8*>(command_table.command_fis), 0, 64);
     command_table.descriptors[0].base_high = 0;

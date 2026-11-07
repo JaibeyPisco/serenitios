@@ -45,11 +45,10 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     auto file = TRY(Core::File::open("/var/run/utmp"sv, Core::File::OpenMode::ReadWrite));
 
     auto file_contents = TRY(file->read_until_eof());
-    auto previous_json = TRY(JsonValue::from_string(file_contents));
-
     JsonObject json;
 
     if (!file_contents.is_empty()) {
+        auto previous_json = TRY(JsonValue::from_string(file_contents));
         if (!previous_json.is_object()) {
             dbgln("Error: Could not parse JSON");
         } else {

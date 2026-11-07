@@ -50,6 +50,16 @@ else
     chown -R 0:0 mnt/
 fi
 
+# System appearance has one supported theme. Reused image staging directories
+# must not retain alternatives removed from Base by this migration.
+if [ -d mnt/res/themes ]; then
+    for theme in mnt/res/themes/*.ini; do
+        if [ "$theme" != "mnt/res/themes/Default.ini" ] && [ -f "$theme" ]; then
+            rm -f -- "$theme"
+        fi
+    done
+fi
+
 SERENITY_ARCH="${SERENITY_ARCH:-x86_64}"
 
 if [ "$SERENITY_TOOLCHAIN" = "Clang" ]; then
@@ -216,6 +226,7 @@ echo "done"
 printf "adding some desktop icons... "
 ln -sf /bin/Browser mnt/home/anon/Desktop/
 ln -sf /bin/TextEditor mnt/home/anon/Desktop/Text\ Editor
+ln -sf /bin/Terminal mnt/home/anon/Desktop/Terminal
 ln -sf /bin/Help mnt/home/anon/Desktop/
 ln -sf /home/anon mnt/home/anon/Desktop/Home
 chown -R 100:100 mnt/home/anon/Desktop

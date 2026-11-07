@@ -32,6 +32,14 @@ Partition::DiskPartitionMetadata const& StorageDevicePartition::metadata() const
     return m_metadata;
 }
 
+ErrorOr<void> StorageDevicePartition::sync()
+{
+    auto device = m_device.strong_ref();
+    if (!device)
+        return EIO;
+    return device->sync();
+}
+
 void StorageDevicePartition::start_request(AsyncBlockDeviceRequest& request)
 {
     auto device = m_device.strong_ref();

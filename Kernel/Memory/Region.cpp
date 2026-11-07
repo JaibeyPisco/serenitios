@@ -11,6 +11,7 @@
 #include <Kernel/FileSystem/Inode.h>
 #include <Kernel/Interrupts/InterruptDisabler.h>
 #include <Kernel/Library/Panic.h>
+#include <Kernel/Memory/AddressSpace.h>
 #include <Kernel/Memory/AnonymousVMObject.h>
 #include <Kernel/Memory/MMIOVMObject.h>
 #include <Kernel/Memory/MemoryManager.h>
@@ -59,10 +60,15 @@ Region::Region(VirtualRange const& range, NonnullLockRefPtr<VMObject> vmobject, 
 
 Region::~Region()
 {
+    // Staged splits have not been published in the region tree or VMObject list.
+    if (m_staged)
+        return;
+
     if (is_writable() && vmobject().is_shared_inode())
         (void)static_cast<SharedInodeVMObject&>(vmobject()).sync_before_destroying();
 
-    m_vmobject->remove_region(*this);
+    if (!m_detached_from_vmobject)
+        m_vmobject->remove_region(*this);
 
     if (m_page_directory) {
         SpinlockLocker pd_locker(m_page_directory->get_lock());
@@ -91,6 +97,14 @@ Region::~Region()
 ErrorOr<NonnullOwnPtr<Region>> Region::create_unbacked()
 {
     return adopt_nonnull_own_or_enomem(new (nothrow) Region);
+}
+
+void Region::detach_from_vmobject_for_unmap()
+{
+    VERIFY(!m_detached_from_vmobject);
+    VERIFY(!m_in_progress_page_faults);
+    m_vmobject->remove_region(*this);
+    m_detached_from_vmobject = true;
 }
 
 ErrorOr<NonnullOwnPtr<Region>> Region::create_unplaced(NonnullLockRefPtr<VMObject> vmobject, size_t offset_in_vmobject, OwnPtr<KString> name, Region::Access access, MemoryType memory_type, bool shared)
@@ -278,7 +292,20 @@ bool Region::map_individual_page_impl(size_t page_index, ShouldLockVMObject shou
 
 bool Region::remap_vmobject_page(size_t page_index, NonnullRefPtr<PhysicalRAMPage> physical_page, ShouldLockVMObject should_lock_vmobject)
 {
-    SpinlockLocker page_lock(m_page_directory->get_lock());
+    // Regions join the VMObject list during construction, before map() assigns
+    // their page directory. A fault in another process sharing this VMObject
+    // can visit such a region while fork() is still preparing its mappings.
+    // There are no PTEs to update yet; map() will use the current physical page.
+    auto page_directory = m_page_directory;
+    if (!page_directory)
+        return true;
+
+    SpinlockLocker page_lock(page_directory->get_lock());
+    // unmap() may have cleared the directory while we waited for its lock.
+    // Keep the directory alive while locking, and only update a mapping that
+    // still belongs to it. A later map() will populate any replacement mapping.
+    if (m_page_directory != page_directory)
+        return true;
 
     // NOTE: `page_index` is a VMObject page index, so first we convert it to a Region page index.
     if (!translate_vmobject_page(page_index))
@@ -420,6 +447,185 @@ void Region::remap_with_locked_vmobject()
 void Region::remap()
 {
     remap_impl(ShouldLockVMObject::Yes);
+}
+
+ErrorOr<void> Region::try_set_access(Access access)
+{
+    VERIFY(m_page_directory);
+
+    // The caller must hold the address space lock so this region cannot be unmapped.
+    // Allocate bookkeeping before holding the page directory lock, since growing a
+    // Vector can allocate kernel memory and re-enter memory management.
+    Vector<NonnullRefPtr<PhysicalRAMPage>, 4> page_tables;
+    size_t missing_tables;
+    {
+        SpinlockLocker page_lock(m_page_directory->get_lock());
+        missing_tables = MM.missing_page_tables(*m_page_directory, range());
+    }
+    TRY(page_tables.try_ensure_capacity(missing_tables));
+
+    SpinlockLocker page_lock(m_page_directory->get_lock());
+    TRY(MM.prepare_page_tables(*m_page_directory, range(), page_tables));
+
+    // From here on every PTE has a backing page table, so remapping cannot fail
+    // to allocate one. Keep the page directory locked through the TLB flush.
+    m_access = access;
+    update_shadow_permission_bits(access);
+    remap_impl(ShouldLockVMObject::Yes);
+    return {};
+}
+
+ErrorOr<NonnullOwnPtr<Region>> Region::try_create_staged_split(VirtualRange const& subrange) const
+{
+    VERIFY(range().contains(subrange));
+    OwnPtr<KString> name;
+    if (m_name)
+        name = TRY(m_name->try_clone());
+
+    auto region = TRY(create_unbacked());
+    region->m_staged = true;
+    region->m_range = subrange;
+    region->m_offset_in_vmobject = m_offset_in_vmobject + subrange.base().get() - vaddr().get();
+    region->m_vmobject = m_vmobject;
+    region->m_name = move(name);
+    region->m_access = m_access;
+    region->m_shared = m_shared;
+    region->m_memory_type = m_memory_type;
+    region->set_mmap(m_mmap, m_mmapped_from_readable, m_mmapped_from_writable);
+    region->set_stack(m_stack);
+    region->set_syscall_region(m_syscall_region);
+    if (has_been_readable())
+        region->m_has_been_readable.set();
+    if (has_been_writable())
+        region->m_has_been_writable.set();
+    if (has_been_executable())
+        region->m_has_been_executable.set();
+    if (is_immutable())
+        region->set_immutable();
+    if (is_initially_loaded_executable_segment())
+        region->set_initially_loaded_executable_segment();
+    return region;
+}
+
+ErrorOr<void> Region::try_set_access_for_range(AddressSpace& space, VirtualRange const& protected_range, Access access)
+{
+    // The caller holds the address space lock throughout preparation and commit.
+    VERIFY(range().contains(protected_range));
+    VERIFY(m_page_directory);
+    VERIFY(m_page_directory.ptr() == &space.page_directory());
+    VERIFY(is_mmap());
+    if (protected_range == range())
+        return try_set_access(access);
+
+    auto remaining_ranges = range().carve(protected_range);
+    VERIFY(!remaining_ranges.is_empty());
+    auto protected_region = TRY(try_create_staged_split(protected_range));
+    OwnPtr<Region> other_region;
+    if (remaining_ranges.size() == 2)
+        other_region = TRY(try_create_staged_split(remaining_ranges[1]));
+
+    Vector<NonnullRefPtr<PhysicalRAMPage>, 4> page_tables;
+    size_t missing_tables;
+    {
+        SpinlockLocker page_lock(m_page_directory->get_lock());
+        missing_tables = MM.missing_page_tables(*m_page_directory, protected_range);
+    }
+    TRY(page_tables.try_ensure_capacity(missing_tables));
+
+    // The syscall preflight waits for faults outside the address-space lock.
+    VERIFY(!m_in_progress_page_faults);
+
+    {
+        SpinlockLocker page_lock(m_page_directory->get_lock());
+        TRY(MM.prepare_page_tables(*m_page_directory, protected_range, page_tables));
+    }
+
+    // All fallible work is complete. Keep the existing PTEs and change only the
+    // requested subrange. The VMObject lock keeps reclaim and alias remapping
+    // from observing the transfer of mapping ownership between regions.
+    SpinlockLocker vmobject_lock(vmobject().m_lock);
+    SpinlockLocker page_lock(m_page_directory->get_lock());
+    auto old_base = vaddr();
+    VERIFY(space.region_tree().remove(*this));
+    // Removal leaves the node's old color and parent intact. Reset them before
+    // reinserting the same Region at its new base address.
+    m_tree_node.parent = nullptr;
+    m_tree_node.color = AK::BaseRedBlackTree<FlatPtr>::Color::Red;
+    m_range = remaining_ranges[0];
+    m_offset_in_vmobject += vaddr().get() - old_base.get();
+    space.region_tree().regions().insert(vaddr().get(), *this);
+
+    auto publish = [&](Region& region) {
+        region.set_page_directory(*m_page_directory);
+        region.m_staged = false;
+        vmobject().m_regions.append(region);
+        // These disjoint ranges partition the old region, so placement cannot
+        // fail and the intrusive tree needs no allocation here.
+        space.region_tree().regions().insert(region.vaddr().get(), region);
+    };
+    publish(*protected_region);
+    if (other_region) {
+        publish(*other_region);
+        (void)other_region.leak_ptr();
+    }
+    protected_region->m_access = access;
+    protected_region->update_shadow_permission_bits(access);
+    if (vmobject().is_mmio()) {
+        auto paddr = static_cast<MMIOVMObject const&>(vmobject()).base_address().offset(protected_region->offset_in_vmobject());
+        MUST(protected_region->map(*m_page_directory, paddr));
+    } else {
+        MUST(protected_region->map_impl(*m_page_directory, ShouldLockVMObject::No, ShouldFlushTLB::Yes, protected_region->is_readable(), protected_region->is_writable()));
+    }
+    (void)protected_region.leak_ptr();
+    return {};
+}
+
+void Region::unmap_subrange(AddressSpace& space, VirtualRange const& removed_range, OwnPtr<Region> trailing_region)
+{
+    // The caller holds the address space lock and has prepared all metadata.
+    VERIFY(range().contains(removed_range));
+    VERIFY(m_page_directory.ptr() == &space.page_directory());
+    VERIFY(is_mmap());
+    auto remaining_ranges = range().carve(removed_range);
+    VERIFY(!remaining_ranges.is_empty());
+    VERIFY((remaining_ranges.size() == 2) == !!trailing_region);
+    if (trailing_region) {
+        VERIFY(trailing_region->m_staged);
+        VERIFY(trailing_region->range() == remaining_ranges[1]);
+    }
+
+    // The caller preflights faults and defers shared-file writeback until after
+    // releasing the address-space lock. Neither operation may block here.
+    VERIFY(!m_in_progress_page_faults);
+
+    {
+        SpinlockLocker vmobject_lock(vmobject().m_lock);
+        SpinlockLocker page_lock(m_page_directory->get_lock());
+        auto old_base = vaddr();
+        VERIFY(space.region_tree().remove(*this));
+        m_tree_node.parent = nullptr;
+        m_tree_node.color = AK::BaseRedBlackTree<FlatPtr>::Color::Red;
+        m_range = remaining_ranges[0];
+        m_offset_in_vmobject += vaddr().get() - old_base.get();
+        space.region_tree().regions().insert(vaddr().get(), *this);
+        if (trailing_region) {
+            trailing_region->set_page_directory(*m_page_directory);
+            trailing_region->m_staged = false;
+            vmobject().m_regions.append(*trailing_region);
+            space.region_tree().regions().insert(trailing_region->vaddr().get(), *trailing_region);
+            (void)trailing_region.leak_ptr();
+        }
+    }
+
+    // VMObject remapping now visits only the retained ranges. Drop its lock
+    // before releasing PTEs, which can return page-table pages to the allocator.
+    // Retained PTEs are never cleared or reallocated.
+    SpinlockLocker page_lock(m_page_directory->get_lock());
+    auto count = removed_range.size() / PAGE_SIZE;
+    for (size_t i = 0; i < count; ++i) {
+        MM.release_pte(*m_page_directory, removed_range.base().offset(i * PAGE_SIZE), i == count - 1 ? MemoryManager::IsLastPTERelease::Yes : MemoryManager::IsLastPTERelease::No);
+    }
+    MemoryManager::flush_tlb(m_page_directory, removed_range.base(), count);
 }
 
 void Region::clear_to_zero()

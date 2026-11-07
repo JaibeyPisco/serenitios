@@ -73,7 +73,7 @@ private:
     ext2_group_desc const& group_descriptor(GroupIndex) const;
     ext2_group_desc* block_group_descriptors() { return (ext2_group_desc*)m_cached_group_descriptor_table->data(); }
     ext2_group_desc const* block_group_descriptors() const { return (ext2_group_desc const*)m_cached_group_descriptor_table->data(); }
-    void flush_block_group_descriptor_table();
+    ErrorOr<void> flush_block_group_descriptor_table();
     u64 inodes_per_block() const;
     u64 inodes_per_group() const;
     u64 blocks_per_group() const;
@@ -123,6 +123,7 @@ private:
     mutable HashMap<InodeIndex, RefPtr<Ext2FSInode>> m_inode_cache;
 
     bool m_super_block_dirty { false };
+    bool m_was_clean_at_mount { false };
     bool m_block_group_descriptors_dirty { false };
 
     struct CachedBitmap {

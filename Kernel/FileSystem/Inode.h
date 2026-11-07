@@ -91,7 +91,7 @@ public:
     LockRefPtr<Memory::SharedInodeVMObject> shared_vmobject() const;
 
     static void sync_all();
-    void sync();
+    ErrorOr<void> sync();
 
     bool has_watchers() const;
 

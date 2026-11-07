@@ -1,0 +1,21 @@
+SERENITYOS — PRIMEROS PASOS
+
+Tus archivos
+Abre Home y guarda tus documentos en Documents. Text Editor permite crear y
+editar archivos de texto. Los archivos guardados permanecen después de reiniciar.
+
+Aplicaciones
+El menú Serenity reúne las aplicaciones. Terminal abre la línea de comandos;
+escribe help para abrir la ayuda. Home abre tus carpetas.
+
+Pantalla y teclado
+Abre Settings en el menú Serenity para ajustar la pantalla y el teclado.
+Si una resolución deja parte del escritorio fuera de la ventana, vuelve a una
+resolución menor para poder ver también la barra inferior.
+
+Apagar
+Guarda los documentos y utiliza la opción de apagado del menú Serenity.
+Espera a que el sistema termine antes de cerrar la máquina virtual.
+
+Esta versión sigue siendo experimental. Conserva una copia de tus archivos
+importantes fuera de la máquina virtual.

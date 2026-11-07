@@ -9,12 +9,13 @@
 #include <LibGfx/Painter.h>
 #include <LibGfx/Palette.h>
 #include <LibGfx/StylePainter.h>
+#include <LibGfx/SerenityStylePainter.h>
 
 namespace Gfx {
 
 BaseStylePainter& StylePainter::current()
 {
-    static ClassicStylePainter style;
+    static SerenityStylePainter style;
     return style;
 }
 

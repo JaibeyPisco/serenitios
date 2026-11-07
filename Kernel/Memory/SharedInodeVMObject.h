@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include <Kernel/Locking/Mutex.h>
 #include <Kernel/Memory/InodeVMObject.h>
 #include <Kernel/UnixTypes.h>
 
@@ -33,6 +34,7 @@ private:
     SharedInodeVMObject& operator=(SharedInodeVMObject const&) = delete;
 
     ErrorOr<void> sync_impl(off_t offset_in_pages, size_t pages, bool should_remap);
+    Mutex m_sync_lock { "SharedInodeVMObject sync"sv };
 };
 
 }

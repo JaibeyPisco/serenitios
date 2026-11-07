@@ -954,6 +954,11 @@ void Process::finalize()
         context = nullptr;
     });
 
+    // Reclaim the exiting process's mappings before waking waitpid callers.
+    // Under memory pressure, a woken parent may immediately need those pages
+    // to fault its code back in or allocate memory for its next child.
+    m_space.with([](auto& space) { space->remove_all_regions({}); });
+
     m_state.store(State::Dead, AK::MemoryOrder::memory_order_release);
 
     {
@@ -972,8 +977,6 @@ void Process::finalize()
             parent->m_ticks_in_kernel_for_dead_children += m_ticks_in_kernel + m_ticks_in_kernel_for_dead_children;
         }
     }
-
-    m_space.with([](auto& space) { space->remove_all_regions({}); });
 
     VERIFY(ref_count() > 0);
     // WaitBlockerSet::finalize will be in charge of dropping the last

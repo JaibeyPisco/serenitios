@@ -280,6 +280,8 @@ private:
 
     PageTableEntry* pte(PageDirectory&, VirtualAddress);
     PageTableEntry* ensure_pte(PageDirectory&, VirtualAddress);
+    size_t missing_page_tables(PageDirectory&, VirtualRange const&);
+    ErrorOr<void> prepare_page_tables(PageDirectory&, VirtualRange const&, Vector<NonnullRefPtr<PhysicalRAMPage>, 4>&);
     enum class IsLastPTERelease {
         Yes,
         No

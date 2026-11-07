@@ -112,8 +112,7 @@ ErrorOr<void> InodeFile::truncate(u64 size)
 
 ErrorOr<void> InodeFile::sync()
 {
-    m_inode->sync();
-    return {};
+    return m_inode->sync();
 }
 
 ErrorOr<void> InodeFile::chown(Credentials const& credentials, OpenFileDescription& description, UserID uid, GroupID gid)

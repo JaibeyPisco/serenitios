@@ -1,0 +1,23 @@
+#!/bin/sh
+# Copyright (c) 2026, the SerenityOS developers.
+# SPDX-License-Identifier: BSD-2-Clause
+export PATH=/bin:/sbin:/usr/bin:/usr/sbin
+export PYTHONUNBUFFERED=1
+export LC_ALL=C
+/bin/busybox mount -t devtmpfs devtmpfs /dev
+exec </dev/console >/dev/console 2>&1
+/bin/busybox mount -t proc proc /proc
+/bin/busybox mount -t sysfs sysfs /sys
+/bin/busybox mount -t tmpfs -o mode=1777 tmpfs /tmp
+/bin/busybox hostname serenity-recovery
+echo "Loading storage and input drivers..."
+for module in ahci ata_piix nvme virtio_pci virtio_blk virtio_scsi sd_mod usb_storage uas xhci_pci ehci_pci uhci_hcd hid_generic usbhid atkbd; do
+    /sbin/modprobe "$module" 2>/dev/null || true
+done
+/bin/busybox sleep 2
+/bin/busybox mdev -s
+while true; do
+    /usr/bin/python3 /rescue/native.py
+    echo "Recovery menu exited. Restarting menu in 2 seconds."
+    /bin/busybox sleep 2
+done

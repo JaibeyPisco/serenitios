@@ -601,6 +601,9 @@ void Window::restore_size_and_position(StringView domain, StringView group, Opti
         resize(fallback_size.release_value());
     }
 
+    // A saved position can be outside the current desktop after a resolution
+    // change or disconnecting a monitor. Keep the titlebar and controls usable.
+    constrain_to_desktop();
     set_maximized(Config::read_bool(domain, group, "Maximized"sv, false));
 }
 

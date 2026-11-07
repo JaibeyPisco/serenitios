@@ -27,6 +27,7 @@ public:
     bool write_block(u64 index, UserOrKernelBuffer const&);
 
     virtual void start_request(AsyncBlockDeviceRequest&) = 0;
+    virtual ErrorOr<void> sync() override { return ENOTSUP; }
 
 protected:
     BlockDevice(MajorAllocation::BlockDeviceFamily, MinorNumber minor, size_t block_size = PAGE_SIZE);
@@ -50,7 +51,8 @@ class AsyncBlockDeviceRequest final : public AsyncDeviceRequest {
 public:
     enum RequestType {
         Read,
-        Write
+        Write,
+        Flush
     };
     AsyncBlockDeviceRequest(Device& block_device, RequestType request_type,
         u64 block_index, u32 block_count, UserOrKernelBuffer const& buffer, size_t buffer_size);
@@ -71,6 +73,8 @@ public:
             return "BlockDeviceRequest (read)"sv;
         case Write:
             return "BlockDeviceRequest (write)"sv;
+        case Flush:
+            return "BlockDeviceRequest (flush)"sv;
         default:
             VERIFY_NOT_REACHED();
         }

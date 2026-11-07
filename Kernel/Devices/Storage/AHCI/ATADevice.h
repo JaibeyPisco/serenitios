@@ -19,6 +19,7 @@ public:
 
     // ^BlockDevice
     virtual void start_request(AsyncBlockDeviceRequest&) override;
+    virtual ErrorOr<void> sync() override;
 
     u16 ata_capabilites() const { return m_capabilities; }
     ATA::Address const& ata_address() const { return m_ata_address; }

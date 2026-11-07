@@ -69,16 +69,6 @@ void Button::paint_event(PaintEvent& event)
     if (m_icon && !text().is_empty())
         icon_location.set_x(content_rect.x());
 
-    if (paint_pressed || is_checked()) {
-        painter.translate(1, 1);
-    } else if (m_icon && is_enabled() && is_hovered() && button_style() == Gfx::ButtonStyle::Coolbar) {
-        auto shadow_color = palette().button().darkened(0.7f);
-        painter.blit_filtered(icon_location.translated(1, 1), *m_icon, m_icon->rect(), [&shadow_color](auto) {
-            return shadow_color;
-        });
-        icon_location.translate_by(-1, -1);
-    }
-
     if (m_icon) {
         auto solid_color = m_icon->solid_color(60);
         bool should_invert_icon = false;
@@ -111,14 +101,6 @@ void Button::paint_event(PaintEvent& event)
     text_rect.align_within(content_rect, text_alignment());
     paint_text(painter, text_rect, font, text_alignment());
 
-    if (is_focused()) {
-        Gfx::IntRect focus_rect;
-        if (m_icon && !text().is_empty())
-            focus_rect = text_rect.inflated(4, 4);
-        else
-            focus_rect = rect().shrunken(8, 8);
-        painter.draw_focus_rect(focus_rect, palette().focus_outline());
-    }
 }
 
 void Button::click(unsigned modifiers)

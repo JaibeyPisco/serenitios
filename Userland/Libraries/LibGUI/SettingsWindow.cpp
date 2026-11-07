@@ -13,6 +13,7 @@
 #include <LibGUI/MessageBox.h>
 #include <LibGUI/SettingsWindow.h>
 #include <LibGUI/Widget.h>
+#include <LibGfx/DesignMetrics.h>
 
 namespace GUI {
 
@@ -28,19 +29,19 @@ ErrorOr<NonnullRefPtr<SettingsWindow>> SettingsWindow::create(ByteString title, 
     auto window = TRY(SettingsWindow::try_create());
 
     window->set_title(move(title));
-    window->resize(400, 480);
+    window->resize(Gfx::DesignMetrics::settings_width, Gfx::DesignMetrics::settings_height);
     window->set_resizable(false);
     window->set_minimizable(false);
 
     auto main_widget = window->set_main_widget<GUI::Widget>();
     main_widget->set_fill_with_background_color(true);
-    main_widget->set_layout<GUI::VerticalBoxLayout>(4, 6);
+    main_widget->set_layout<GUI::VerticalBoxLayout>(Gfx::DesignMetrics::content_margin, Gfx::DesignMetrics::spacing);
 
     window->m_tab_widget = main_widget->add<GUI::TabWidget>();
 
     auto& button_container = main_widget->add<GUI::Widget>();
     button_container.set_preferred_size({ SpecialDimension::Grow, SpecialDimension::Fit });
-    button_container.set_layout<GUI::HorizontalBoxLayout>(GUI::Margins {}, 6);
+    button_container.set_layout<GUI::HorizontalBoxLayout>(GUI::Margins {}, Gfx::DesignMetrics::spacing);
 
     if (show_defaults_button == ShowDefaultsButton::Yes) {
         window->m_reset_button = button_container.add<GUI::DialogButton>("Defaults"_string);
@@ -65,6 +66,10 @@ ErrorOr<NonnullRefPtr<SettingsWindow>> SettingsWindow::create(ByteString title, 
 
     window->m_apply_button = button_container.add<GUI::DialogButton>("Apply"_string);
     window->m_apply_button->set_enabled(false);
+    for (auto* button : { window->m_ok_button.ptr(), window->m_cancel_button.ptr(), window->m_apply_button.ptr(), window->m_reset_button.ptr() }) {
+        if (button)
+            button->set_fixed_height(Gfx::DesignMetrics::control_height);
+    }
     window->m_apply_button->on_click = [window = window->make_weak_ptr<SettingsWindow>()](auto) {
         window->apply_settings();
     };

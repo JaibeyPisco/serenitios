@@ -211,6 +211,8 @@ public:
 
     void remap_with_locked_vmobject();
     void remap();
+    ErrorOr<void> try_set_access(Access);
+    ErrorOr<void> try_set_access_for_range(AddressSpace&, VirtualRange const&, Access);
 
     [[nodiscard]] bool is_mapped() const { return m_page_directory != nullptr; }
 
@@ -226,6 +228,8 @@ public:
     void finish_handling_page_fault(Badge<MemoryManager>) { m_in_progress_page_faults--; }
 
 private:
+    void detach_from_vmobject_for_unmap();
+    bool m_detached_from_vmobject { false };
     enum class ShouldLockVMObject {
         No,
         Yes,
@@ -262,6 +266,8 @@ private:
     [[nodiscard]] bool map_individual_page_impl(size_t page_index, PhysicalAddress, bool readable, bool writeable, ShouldLockVMObject);
 
     void remap_impl(ShouldLockVMObject should_lock_vmobject);
+    ErrorOr<NonnullOwnPtr<Region>> try_create_staged_split(VirtualRange const&) const;
+    void unmap_subrange(AddressSpace&, VirtualRange const&, OwnPtr<Region> trailing_region);
 
     LockRefPtr<PageDirectory> m_page_directory;
     VirtualRange m_range;
@@ -276,6 +282,7 @@ private:
     bool m_syscall_region : 1 { false };
     bool m_mmapped_from_readable : 1 { false };
     bool m_mmapped_from_writable : 1 { false };
+    bool m_staged : 1 { false };
 
     MemoryType m_memory_type;
 

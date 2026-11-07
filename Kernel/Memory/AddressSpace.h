@@ -20,6 +20,13 @@
 
 namespace Kernel::Memory {
 
+// Run this cleanup only after releasing the address-space spinlock.
+struct DeferredUnmapCleanup {
+    ~DeferredUnmapCleanup();
+    Vector<NonnullOwnPtr<Region>, 4> regions;
+    Vector<NonnullLockRefPtr<VMObject>, 4> shared_vmobjects;
+};
+
 class AddressSpace {
 public:
     static ErrorOr<NonnullOwnPtr<AddressSpace>> try_create(Process&, AddressSpace const* parent);
@@ -33,7 +40,8 @@ public:
 
     void dump_regions();
 
-    ErrorOr<void> unmap_mmap_range(VirtualAddress, size_t);
+    ErrorOr<void> unmap_mmap_range(VirtualAddress, size_t, DeferredUnmapCleanup&);
+    ErrorOr<void> ensure_no_pending_page_faults(VirtualRange const&);
 
     ErrorOr<Region*> allocate_region_with_vmobject(VirtualRange requested_range, NonnullLockRefPtr<VMObject>, size_t offset_in_vmobject, StringView name, int prot, bool shared, MemoryType = MemoryType::Normal);
     ErrorOr<Region*> allocate_region_with_vmobject(RandomizeVirtualAddress, VirtualAddress requested_address, size_t requested_size, size_t requested_alignment, NonnullLockRefPtr<VMObject>, size_t offset_in_vmobject, StringView name, int prot, bool shared, MemoryType = MemoryType::Normal);

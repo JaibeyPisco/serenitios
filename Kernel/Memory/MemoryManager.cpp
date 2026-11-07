@@ -1013,6 +1013,60 @@ PageTableEntry* MemoryManager::ensure_pte(PageDirectory& page_directory, Virtual
     return &quickmap_pt(PhysicalAddress(pde.page_table_base()))[page_table_index];
 }
 
+size_t MemoryManager::missing_page_tables(PageDirectory& page_directory, VirtualRange const& range)
+{
+    VERIFY(page_directory.get_lock().is_locked_by_current_processor());
+    constexpr FlatPtr page_table_span = PAGE_SIZE * 512;
+    size_t count = 0;
+    for (auto address = range.base().get() & ~(page_table_span - 1); address < range.end().get(); address += page_table_span) {
+        auto* pd = quickmap_pd(page_directory, (address >> 30) & 0x1ff);
+        if (!pd[(address >> 21) & 0x1ff].is_present())
+            ++count;
+    }
+    return count;
+}
+
+ErrorOr<void> MemoryManager::prepare_page_tables(PageDirectory& page_directory, VirtualRange const& range, Vector<NonnullRefPtr<PhysicalRAMPage>, 4>& page_tables)
+{
+    VERIFY(page_directory.get_lock().is_locked_by_current_processor());
+    VERIFY(page_tables.is_empty());
+    auto count = missing_page_tables(page_directory, range);
+    if (count > page_tables.capacity())
+        return ENOMEM;
+
+    // Do not use allocate_physical_page() here: reclaiming memory remaps VMObjects
+    // and can recursively enter ensure_pte(). Keep all reservations detached until
+    // they have succeeded, so an error leaves the directory and permissions intact.
+    for (size_t i = 0; i < count; ++i) {
+        auto page = m_global_data.with([&](auto& global_data) {
+            return find_free_physical_page(false, global_data);
+        });
+        if (!page)
+            return ENOMEM;
+        auto* ptr = quickmap_page(*page);
+        memset(ptr, 0, PAGE_SIZE);
+        unquickmap_page();
+        page_tables.unchecked_append(page.release_nonnull());
+    }
+
+    constexpr FlatPtr page_table_span = PAGE_SIZE * 512;
+    size_t index = 0;
+    for (auto address = range.base().get() & ~(page_table_span - 1); address < range.end().get(); address += page_table_span) {
+        auto* pd = quickmap_pd(page_directory, (address >> 30) & 0x1ff);
+        auto& pde = pd[(address >> 21) & 0x1ff];
+        if (pde.is_present())
+            continue;
+        auto& page = page_tables[index++].leak_ref();
+        pde.set_page_table_base(page.paddr().get());
+        pde.set_user_allowed(true);
+        pde.set_present(true);
+        pde.set_writable(true);
+        pde.set_global(&page_directory == m_kernel_page_directory.ptr());
+        // The transferred reference is released by release_pte(), as in ensure_pte().
+    }
+    return {};
+}
+
 void MemoryManager::release_pte(PageDirectory& page_directory, VirtualAddress vaddr, IsLastPTERelease is_last_pte_release)
 {
     VERIFY_INTERRUPTS_DISABLED();
@@ -1398,59 +1452,68 @@ NonnullRefPtr<PhysicalRAMPage> MemoryManager::allocate_committed_physical_page(B
 
 ErrorOr<NonnullRefPtr<PhysicalRAMPage>> MemoryManager::allocate_physical_page(ShouldZeroFill should_zero_fill, bool* did_purge, MemoryType memory_type_for_zero_fill)
 {
-    return m_global_data.with([&](auto& global_data) -> ErrorOr<NonnullRefPtr<PhysicalRAMPage>> {
-        auto page = find_free_physical_page(false, global_data);
-        bool purged_pages = false;
+    auto try_allocate = [&] {
+        return m_global_data.with([&](auto& global_data) {
+            return find_free_physical_page(false, global_data);
+        });
+    };
+    // Reclamation drops PhysicalRAMPage references, which re-enters the global
+    // allocator lock through deallocate_physical_page(). Never retain that lock
+    // while visiting VMObjects or remapping their regions.
+    auto page = try_allocate();
+    bool purged_pages = false;
 
-        if (!page) {
-            // We didn't have a single free physical page. Let's try to free something up!
-            // First, we look for a purgeable VMObject in the volatile state.
-            for_each_vmobject([&](auto& vmobject) {
-                if (!vmobject.is_anonymous())
-                    return IterationDecision::Continue;
-                auto& anonymous_vmobject = static_cast<AnonymousVMObject&>(vmobject);
-                if (!anonymous_vmobject.is_purgeable() || !anonymous_vmobject.is_volatile())
-                    return IterationDecision::Continue;
-                if (auto purged_page_count = anonymous_vmobject.purge()) {
-                    dbgln("MM: Purge saved the day! Purged {} pages from AnonymousVMObject", purged_page_count);
-                    page = find_free_physical_page(false, global_data);
-                    purged_pages = true;
-                    VERIFY(page);
-                    return IterationDecision::Break;
-                }
+    if (!page) {
+        // We didn't have a single free physical page. Let's try to free something up!
+        // First, we look for a purgeable VMObject in the volatile state.
+        for_each_vmobject([&](auto& vmobject) {
+            if (!vmobject.is_anonymous())
                 return IterationDecision::Continue;
-            });
-        }
-        if (!page) {
-            // Second, we look for a file-backed VMObject with clean pages.
-            for_each_vmobject([&](auto& vmobject) {
-                if (!vmobject.is_inode())
-                    return IterationDecision::Continue;
-                auto& inode_vmobject = static_cast<InodeVMObject&>(vmobject);
-                if (auto released_page_count = inode_vmobject.try_release_clean_pages(1)) {
-                    dbgln("MM: Clean inode release saved the day! Released {} pages from InodeVMObject", released_page_count);
-                    page = find_free_physical_page(false, global_data);
-                    VERIFY(page);
-                    return IterationDecision::Break;
-                }
+            auto& anonymous_vmobject = static_cast<AnonymousVMObject&>(vmobject);
+            if (!anonymous_vmobject.is_purgeable() || !anonymous_vmobject.is_volatile())
                 return IterationDecision::Continue;
-            });
-        }
-        if (!page) {
-            dmesgln("MM: no physical pages available");
-            return ENOMEM;
-        }
+            if (auto purged_page_count = anonymous_vmobject.purge()) {
+                dbgln("MM: Purge saved the day! Purged {} pages from AnonymousVMObject", purged_page_count);
+                page = try_allocate();
+                purged_pages = true;
+                // Another CPU may have consumed the released page, or a
+                // pinned reference may still prevent physical reclamation.
+                if (page)
+                    return IterationDecision::Break;
+            }
+            return IterationDecision::Continue;
+        });
+    }
+    if (!page) {
+        // Second, we look for a file-backed VMObject with clean pages.
+        for_each_vmobject([&](auto& vmobject) {
+            if (!vmobject.is_inode())
+                return IterationDecision::Continue;
+            auto& inode_vmobject = static_cast<InodeVMObject&>(vmobject);
+            if (auto released_page_count = inode_vmobject.try_release_clean_pages(1)) {
+                dbgln("MM: Clean inode release saved the day! Released {} pages from InodeVMObject", released_page_count);
+                page = try_allocate();
+                if (page)
+                    return IterationDecision::Break;
+            }
+            return IterationDecision::Continue;
+        });
+    }
+    if (!page) {
+        dmesgln("MM: no physical pages available");
+        return ENOMEM;
+    }
 
-        if (should_zero_fill == ShouldZeroFill::Yes) {
-            auto* ptr = quickmap_page(*page, memory_type_for_zero_fill);
-            memset(ptr, 0, PAGE_SIZE);
-            unquickmap_page();
-        }
+    if (should_zero_fill == ShouldZeroFill::Yes) {
+        InterruptDisabler disabler;
+        auto* ptr = quickmap_page(*page, memory_type_for_zero_fill);
+        memset(ptr, 0, PAGE_SIZE);
+        unquickmap_page();
+    }
 
-        if (did_purge)
-            *did_purge = purged_pages;
-        return page.release_nonnull();
-    });
+    if (did_purge)
+        *did_purge = purged_pages;
+    return page.release_nonnull();
 }
 
 ErrorOr<Vector<NonnullRefPtr<PhysicalRAMPage>>> MemoryManager::allocate_contiguous_physical_pages(size_t size, MemoryType memory_type_for_zero_fill)

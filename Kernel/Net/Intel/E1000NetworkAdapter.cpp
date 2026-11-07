@@ -195,7 +195,7 @@ UNMAP_AFTER_INIT ErrorOr<NonnullRefPtr<NetworkAdapter>> E1000NetworkAdapter::cre
     auto registers_io_window = TRY(IOWindow::create_for_pci_device_bar(pci_device_identifier, PCI::HeaderType0BaseRegister::BAR0));
 
     auto rx_buffer_region = TRY(MM.allocate_contiguous_kernel_region(rx_buffer_size * number_of_rx_descriptors, "E1000 RX buffers"sv, Memory::Region::Access::ReadWrite));
-    auto tx_buffer_region = MM.allocate_contiguous_kernel_region(tx_buffer_size * number_of_tx_descriptors, "E1000 TX buffers"sv, Memory::Region::Access::ReadWrite).release_value();
+    auto tx_buffer_region = TRY(MM.allocate_contiguous_kernel_region(tx_buffer_size * number_of_tx_descriptors, "E1000 TX buffers"sv, Memory::Region::Access::ReadWrite));
     // FIXME: Synchronize DMA buffer accesses correctly and set the MemoryType to NonCacheable.
     auto rx_descriptors = TRY(Memory::allocate_dma_region_as_typed_array<RxDescriptor volatile>(number_of_rx_descriptors, "E1000 RX Descriptors"sv, Memory::Region::Access::ReadWrite, Memory::MemoryType::IO));
     auto tx_descriptors = TRY(Memory::allocate_dma_region_as_typed_array<TxDescriptor volatile>(number_of_tx_descriptors, "E1000 TX Descriptors"sv, Memory::Region::Access::ReadWrite, Memory::MemoryType::IO));
@@ -287,6 +287,7 @@ UNMAP_AFTER_INIT E1000NetworkAdapter::E1000NetworkAdapter(StringView interface_n
     Memory::TypedMapping<TxDescriptor volatile[]> tx_descriptors)
     : NetworkAdapter(interface_name)
     , PCI::Device(device_identifier)
+    , m_hardware_features(determine_hardware_features())
     , m_registers_io_window(move(registers_io_window))
     , m_rx_descriptors(move(rx_descriptors))
     , m_tx_descriptors(move(tx_descriptors))

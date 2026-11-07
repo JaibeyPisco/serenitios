@@ -106,13 +106,16 @@ ErrorOr<void> Ext2FS::flush_super_block()
     TRY(raw_write_blocks(super_block_offset_on_device / device_block_size(), superblock_physical_block_count, super_block_buffer));
 
     auto is_sparse = has_flag(get_features_readonly(), FeaturesReadOnly::SparseSuperblock);
+    auto backup_super_block = m_super_block;
+    auto backup_buffer = UserOrKernelBuffer::for_kernel_buffer(reinterpret_cast<u8*>(&backup_super_block));
 
-    for (auto group = 1u; group < m_block_group_count; ++group) {
+    for (auto group = 2u; group <= m_block_group_count; ++group) {
         auto first_block_in_group = first_block_of_group(group);
         // Superblock copies with sparse layout are in group number 2 and powers of 3, 5, and 7.
         if (!is_sparse || group == 2 || AK::is_power_of<3>(group - 1) || AK::is_power_of<5>(group - 1) || AK::is_power_of<7>(group - 1)) {
             dbgln_if(EXT2_DEBUG, "Writing superblock backup to block group {} (block {})", group, first_block_in_group);
-            TRY(write_blocks(first_block_in_group, 1, super_block_buffer));
+            backup_super_block.s_block_group_nr = static_cast<u16>(group - 1);
+            TRY(write_block(first_block_in_group, backup_buffer, sizeof(ext2_super_block)));
         }
     }
 
@@ -149,6 +152,20 @@ ErrorOr<void> Ext2FS::initialize_while_locked()
     if (super_block.s_magic != EXT2_SUPER_MAGIC) {
         dmesgln("Ext2FS: Bad super block magic");
         return EINVAL;
+    }
+
+    // Reject unsupported formats before interpreting their metadata or marking
+    // the superblock dirty. In particular, ignoring an ext3 journal can destroy
+    // recovery information even when the volume currently appears clean.
+    if (super_block.s_rev_level >= EXT2_DYNAMIC_REV) {
+        constexpr u32 supported_incompat = EXT2_FEATURE_INCOMPAT_FILETYPE;
+        constexpr u32 supported_ro_compat = EXT2_FEATURE_RO_COMPAT_SPARSE_SUPER | EXT2_FEATURE_RO_COMPAT_LARGE_FILE;
+        if ((super_block.s_feature_compat & EXT3_FEATURE_COMPAT_HAS_JOURNAL)
+            || (super_block.s_feature_incompat & ~supported_incompat)
+            || (super_block.s_feature_ro_compat & ~supported_ro_compat)) {
+            dmesgln("Ext2FS: Unsupported filesystem features; refusing mount without modifying the volume");
+            return ENOTSUP;
+        }
     }
 
     if (super_block.s_state == EXT2_ERROR_FS)
@@ -199,8 +216,12 @@ ErrorOr<void> Ext2FS::initialize_while_locked()
 
     // Set filesystem to "error" state until we unmount cleanly.
     dmesgln("Ext2FS: Mount successful, setting superblock to error state.");
+    m_was_clean_at_mount = m_super_block.s_state == EXT2_VALID_FS;
     m_super_block.s_state = EXT2_ERROR_FS;
     TRY(flush_super_block());
+    auto result = BlockBasedFileSystem::flush_writes();
+    if (result.is_error() && result.error().code() != ENOTSUP)
+        return result.release_error();
 
     return {};
 }
@@ -672,17 +693,32 @@ u64 Ext2FS::free_inode_count() const
 
 ErrorOr<void> Ext2FS::prepare_to_clear_last_mount(Inode& mount_guest_inode)
 {
-    MutexLocker locker(m_lock);
-    bool any_inode_busy = false;
-    for (auto& it : m_inode_cache) {
-        // We hold the last reference to the root inode, and the VFS Mount object holds the last reference to the mount_guest_inode,
-        // so they are allowed to have one more reference.
-        if ((it.value == m_root_inode || it.value->identifier() == mount_guest_inode.identifier()) && it.value->ref_count() > 2) {
-            dbgln_if(EXT2_DEBUG, "Ext2FS: Ignoring root or mount point inode's last reference");
-            continue;
+    // Flush inode metadata without holding the filesystem lock: inode operations
+    // acquire the inode lock before the filesystem lock.
+    Vector<NonnullRefPtr<Ext2FSInode>> inodes;
+    {
+        MutexLocker locker(m_lock);
+        if (m_root_inode && m_root_inode->is_metadata_dirty())
+            TRY(inodes.try_append(*m_root_inode));
+        for (auto const& it : m_inode_cache) {
+            if (it.value && it.value->is_metadata_dirty())
+                TRY(inodes.try_append(*it.value));
         }
-        // The Inode::all_instances list always holds one reference to all inodes, which we disregard.
-        if (it.value->ref_count() > 1) {
+    }
+    for (auto& inode : inodes)
+        TRY(inode->flush_metadata());
+    inodes.clear();
+
+    MutexLocker locker(m_lock);
+    // The filesystem owns the root inode. The last mount and the custody used
+    // to resolve the unmount target each hold one reference to its guest inode.
+    auto root_reference_limit = (&mount_guest_inode == m_root_inode.ptr()) ? 3u : 1u;
+    bool any_inode_busy = m_root_inode && m_root_inode->ref_count() > root_reference_limit;
+    for (auto& it : m_inode_cache) {
+        if (!it.value)
+            continue;
+        auto reference_limit = (it.value.ptr() == &mount_guest_inode) ? 3u : 1u;
+        if (it.value->ref_count() > reference_limit) {
             dbgln_if(EXT2_DEBUG, "Ext2FS: Busy inode {} ({} refs)", it.value->index(), it.value->ref_count());
             any_inode_busy = true;
         }
@@ -690,14 +726,38 @@ ErrorOr<void> Ext2FS::prepare_to_clear_last_mount(Inode& mount_guest_inode)
     if (any_inode_busy)
         return EBUSY;
 
+    // Persist all earlier writes before publishing a clean superblock. Keep the
+    // inode cache and root alive until both durability barriers have completed.
+    TRY(flush_writes());
+
+    auto previous_state = m_super_block.s_state;
+    // A clean unmount cannot repair damage left by an earlier unclean mount.
+    m_super_block.s_state = m_was_clean_at_mount ? EXT2_VALID_FS : EXT2_ERROR_FS;
+    auto result = [&]() -> ErrorOr<void> {
+        TRY(flush_super_block());
+        return BlockBasedFileSystem::flush_writes();
+    }();
+    if (result.is_error()) {
+        // The device may have accepted part of the clean-state update. Restore
+        // the mounted state durably before allowing further filesystem changes.
+        auto error = result.release_error();
+        m_super_block.s_state = previous_state;
+        m_super_block_dirty = true;
+        auto restore_result = flush_super_block();
+        if (!restore_result.is_error())
+            restore_result = BlockBasedFileSystem::flush_writes();
+        if (restore_result.is_error()) {
+            set_readonly();
+            dbgln("Ext2FS: Failed to restore mounted state: {}; switching to read-only", restore_result.error());
+        } else {
+            m_super_block_dirty = false;
+        }
+        return error;
+    }
+
+    dmesgln("Ext2FS: Unmount completed (clean: {})", m_super_block.s_state == EXT2_VALID_FS);
     m_inode_cache.clear();
     m_root_inode = nullptr;
-
-    // Mark filesystem as valid before unmount.
-    dmesgln("Ext2FS: Clean unmount, setting superblock to valid state");
-    m_super_block.s_state = EXT2_VALID_FS;
-    TRY(flush_super_block());
-
     return {};
 }
 
@@ -728,30 +788,27 @@ ErrorOr<void> Ext2FS::free_inode(Ext2FSInode& inode)
     return {};
 }
 
-void Ext2FS::flush_block_group_descriptor_table()
+ErrorOr<void> Ext2FS::flush_block_group_descriptor_table()
 {
     MutexLocker locker(m_lock);
     auto blocks_to_write = ceil_div(m_block_group_count * sizeof(ext2_group_desc), logical_block_size());
     auto first_block_of_bgdt = first_block_of_block_group_descriptors();
     auto buffer = UserOrKernelBuffer::for_kernel_buffer((u8*)block_group_descriptors());
-    auto write_bgdt_to_block = [&](BlockIndex index) {
-        if (auto result = write_blocks(index, blocks_to_write, buffer); result.is_error())
-            dbgln("Ext2FS[{}]::flush_block_group_descriptor_table(): Failed to write blocks: {}", fsid(), result.error());
-    };
-
-    write_bgdt_to_block(first_block_of_bgdt);
+    TRY(write_blocks(first_block_of_bgdt, blocks_to_write, buffer));
 
     auto is_sparse = has_flag(get_features_readonly(), FeaturesReadOnly::SparseSuperblock);
 
-    for (auto group = 1u; group < m_block_group_count; ++group) {
+    for (auto group = 2u; group <= m_block_group_count; ++group) {
         // First block is occupied by the super block
         BlockIndex second_block_in_group = first_block_of_group(group).value() + 1;
         // BGDT copies with sparse layout are in group number 2 and powers of 3, 5, and 7.
         if (!is_sparse || group == 2 || AK::is_power_of<3>(group - 1) || AK::is_power_of<5>(group - 1) || AK::is_power_of<7>(group - 1)) {
             dbgln_if(EXT2_DEBUG, "Writing block group descriptor table backup to block group {} (block {})", group, second_block_in_group);
-            write_bgdt_to_block(second_block_in_group);
+            TRY(write_blocks(second_block_in_group, blocks_to_write, buffer));
         }
     }
+
+    return {};
 }
 
 ErrorOr<void> Ext2FS::flush_writes()
@@ -767,15 +824,13 @@ ErrorOr<void> Ext2FS::flush_writes()
             m_super_block_dirty = false;
         }
         if (m_block_group_descriptors_dirty) {
-            flush_block_group_descriptor_table();
+            TRY(flush_block_group_descriptor_table());
             m_block_group_descriptors_dirty = false;
         }
         for (auto& cached_bitmap : m_cached_bitmaps) {
             if (cached_bitmap->dirty) {
                 auto buffer = UserOrKernelBuffer::for_kernel_buffer(cached_bitmap->buffer->data());
-                if (auto result = write_block(cached_bitmap->bitmap_block_index, buffer, logical_block_size()); result.is_error()) {
-                    dbgln("Ext2FS[{}]::flush_writes(): Failed to write blocks: {}", fsid(), result.error());
-                }
+                TRY(write_block(cached_bitmap->bitmap_block_index, buffer, logical_block_size()));
                 cached_bitmap->dirty = false;
                 dbgln_if(EXT2_DEBUG, "Ext2FS[{}]::flush_writes(): Flushed bitmap block {}", fsid(), cached_bitmap->bitmap_block_index);
             }
@@ -795,7 +850,7 @@ ErrorOr<void> Ext2FS::flush_writes()
             if (cached_inode == nullptr)
                 return true;
 
-            return cached_inode->ref_count() == 1 && !cached_inode->has_watchers();
+            return cached_inode->ref_count() == 1 && !cached_inode->has_watchers() && !cached_inode->is_metadata_dirty();
         });
     }
 

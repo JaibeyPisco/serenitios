@@ -132,5 +132,6 @@ private:
 
     LockRefPtr<Memory::ScatterGatherList> m_current_scatter_list;
     bool m_disabled_by_firmware { false };
+    bool m_supports_flush_cache { false };
 };
 }

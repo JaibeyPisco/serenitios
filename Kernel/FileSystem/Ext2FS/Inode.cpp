@@ -59,17 +59,6 @@ ErrorOr<void> Ext2FSInode::write_singly_indirect_block_pointer(BlockBasedFileSys
     singly_indirect_block_contents[offset_in_block] = on_disk_index.value();
     TRY(fs().write_block(m_raw_inode.i_block[EXT2_IND_BLOCK], singly_indirect_block_buffer, block_size));
 
-    if (on_disk_index != 0)
-        return {};
-
-    if (!singly_indirect_block_contents.filled_with(0))
-        return {};
-
-    TRY(fs().set_block_allocation_state(m_raw_inode.i_block[EXT2_IND_BLOCK], false));
-    m_raw_inode.i_block[EXT2_IND_BLOCK] = 0;
-    m_raw_inode.i_blocks -= fs().i_blocks_increment();
-    set_metadata_dirty(true);
-
     return {};
 }
 
@@ -106,25 +95,6 @@ ErrorOr<void> Ext2FSInode::write_doubly_indirect_block_pointer(BlockBasedFileSys
 
     singly_indirect_block_contents[offset_in_singly_indirect_block] = on_disk_index.value();
     TRY(fs().write_block(doubly_indirect_block_contents[offset_in_doubly_indirect_block], singly_indirect_block_buffer, block_size));
-
-    if (on_disk_index != 0)
-        return {};
-
-    if (!singly_indirect_block_contents.filled_with(0))
-        return {};
-
-    TRY(fs().set_block_allocation_state(doubly_indirect_block_contents[offset_in_doubly_indirect_block], false));
-    doubly_indirect_block_contents[offset_in_doubly_indirect_block] = 0;
-    m_raw_inode.i_blocks -= fs().i_blocks_increment();
-    TRY(fs().write_block(m_raw_inode.i_block[EXT2_DIND_BLOCK], doubly_indirect_block_buffer, block_size));
-
-    if (!doubly_indirect_block_contents.filled_with(0))
-        return {};
-
-    TRY(fs().set_block_allocation_state(m_raw_inode.i_block[EXT2_DIND_BLOCK], false));
-    m_raw_inode.i_block[EXT2_DIND_BLOCK] = 0;
-    m_raw_inode.i_blocks -= fs().i_blocks_increment();
-    set_metadata_dirty(true);
 
     return {};
 }
@@ -176,33 +146,6 @@ ErrorOr<void> Ext2FSInode::write_triply_indirect_block_pointer(BlockBasedFileSys
     singly_indirect_block_contents[offset_in_singly_indirect_block] = on_disk_index.value();
     TRY(fs().write_block(doubly_indirect_block_contents[offset_in_doubly_indirect_block], singly_indirect_block_buffer, block_size));
 
-    if (on_disk_index != 0)
-        return {};
-
-    if (!singly_indirect_block_contents.filled_with(0))
-        return {};
-
-    TRY(fs().set_block_allocation_state(doubly_indirect_block_contents[offset_in_doubly_indirect_block], false));
-    doubly_indirect_block_contents[offset_in_doubly_indirect_block] = 0;
-    m_raw_inode.i_blocks -= fs().i_blocks_increment();
-    TRY(fs().write_block(triply_indirect_block_contents[offset_in_triply_indirect_block], doubly_indirect_block_buffer, block_size));
-
-    if (!doubly_indirect_block_contents.filled_with(0))
-        return {};
-
-    TRY(fs().set_block_allocation_state(triply_indirect_block_contents[offset_in_triply_indirect_block], false));
-    triply_indirect_block_contents[offset_in_triply_indirect_block] = 0;
-    m_raw_inode.i_blocks -= fs().i_blocks_increment();
-    TRY(fs().write_block(m_raw_inode.i_block[EXT2_TIND_BLOCK], triply_indirect_block_buffer, block_size));
-
-    if (!triply_indirect_block_contents.filled_with(0))
-        return {};
-
-    TRY(fs().set_block_allocation_state(m_raw_inode.i_block[EXT2_TIND_BLOCK], false));
-    m_raw_inode.i_block[EXT2_TIND_BLOCK] = 0;
-    m_raw_inode.i_blocks -= fs().i_blocks_increment();
-    set_metadata_dirty(true);
-
     return {};
 }
 
@@ -219,9 +162,94 @@ ErrorOr<u32> Ext2FSInode::allocate_and_zero_block()
     return block.value();
 }
 
+ErrorOr<void> Ext2FSInode::remove_block_pointer(BlockBasedFileSystem::BlockIndex logical_block_index)
+{
+    VERIFY(m_inode_lock.is_locked());
+    auto const entries_per_block = EXT2_ADDR_PER_BLOCK(&fs().super_block());
+    auto const block_size = fs().logical_block_size();
+
+    unsigned depth = 0;
+    unsigned root_index;
+    u64 offset;
+    if (logical_block_index < EXT2_NDIR_BLOCKS) {
+        root_index = logical_block_index.value();
+        offset = 0;
+    } else if (logical_block_index < singly_indirect_block_capacity()) {
+        root_index = EXT2_IND_BLOCK;
+        depth = 1;
+        offset = logical_block_index.value() - EXT2_NDIR_BLOCKS;
+    } else if (logical_block_index < doubly_indirect_block_capacity()) {
+        root_index = EXT2_DIND_BLOCK;
+        depth = 2;
+        offset = logical_block_index.value() - singly_indirect_block_capacity();
+    } else if (logical_block_index < triply_indirect_block_capacity()) {
+        root_index = EXT2_TIND_BLOCK;
+        depth = 3;
+        offset = logical_block_index.value() - doubly_indirect_block_capacity();
+    } else {
+        return EINVAL;
+    }
+
+    BlockBasedFileSystem::BlockIndex block = m_raw_inode.i_block[root_index];
+    if (block == 0)
+        return {};
+
+    ByteBuffer storage[3];
+    Span<u32> arrays[3];
+    BlockBasedFileSystem::BlockIndex pointer_blocks[3];
+    unsigned offsets[3];
+    for (unsigned level = 0; level < depth; ++level) {
+        pointer_blocks[level] = block;
+        storage[level] = TRY(ByteBuffer::create_uninitialized(block_size));
+        auto buffer = UserOrKernelBuffer::for_kernel_buffer(storage[level].data());
+        TRY(fs().read_block(block, &buffer, block_size));
+        arrays[level] = { reinterpret_cast<u32*>(storage[level].data()), entries_per_block };
+        offsets[level] = (offset / AK::pow<u64>(entries_per_block, depth - level - 1)) % entries_per_block;
+        block = arrays[level][offsets[level]];
+        if (block == 0)
+            return {};
+    }
+
+    // Only edit temporary copies while finding the highest pointer block that
+    // remains in use. Empty descendants need not be rewritten before detaching.
+    int retained_level = static_cast<int>(depth) - 1;
+    if (depth) {
+        arrays[retained_level][offsets[retained_level]] = 0;
+        while (retained_level >= 0 && arrays[retained_level].filled_with(0)) {
+            --retained_level;
+            if (retained_level >= 0)
+                arrays[retained_level][offsets[retained_level]] = 0;
+        }
+    }
+
+    unsigned removed_pointer_blocks = depth - (retained_level + 1);
+    auto removed_sectors = (1 + removed_pointer_blocks) * fs().i_blocks_increment();
+    if (m_raw_inode.i_blocks < removed_sectors)
+        return EIO;
+    TRY(m_blocks_pending_free.try_ensure_capacity(m_blocks_pending_free.size() + 1 + removed_pointer_blocks));
+
+    // This is the only fallible mutation. A full cached block write either
+    // succeeds completely or leaves the previous pointer block intact.
+    if (retained_level >= 0) {
+        auto buffer = UserOrKernelBuffer::for_kernel_buffer(storage[retained_level].data());
+        TRY(fs().write_block(pointer_blocks[retained_level], buffer, block_size));
+    } else {
+        m_raw_inode.i_block[root_index] = 0;
+    }
+
+    m_blocks_pending_free.unchecked_append(block);
+    for (unsigned level = retained_level + 1; level < depth; ++level)
+        m_blocks_pending_free.unchecked_append(pointer_blocks[level]);
+    m_raw_inode.i_blocks -= removed_sectors;
+    set_metadata_dirty(true);
+    return {};
+}
+
 ErrorOr<void> Ext2FSInode::write_block_pointer(BlockBasedFileSystem::BlockIndex logical_block_index, BlockBasedFileSystem::BlockIndex on_disk_index)
 {
     VERIFY(m_inode_lock.is_locked());
+    if (on_disk_index == 0)
+        return remove_block_pointer(logical_block_index);
 
     if (logical_block_index < EXT2_NDIR_BLOCKS) {
         if (m_raw_inode.i_block[logical_block_index.value()] != on_disk_index) {
@@ -463,11 +491,20 @@ InodeMetadata Ext2FSInode::metadata() const
 ErrorOr<void> Ext2FSInode::flush_metadata()
 {
     MutexLocker locker(m_inode_lock);
-    if (!is_metadata_dirty())
+    if (!is_metadata_dirty() && m_blocks_pending_free.is_empty())
         return {};
 
     dbgln_if(EXT2_DEBUG, "Ext2FSInode[{}]::flush_metadata(): Flushing inode", identifier());
     TRY(fs().write_ext2_inode(index(), m_raw_inode));
+    if (!m_blocks_pending_free.is_empty()) {
+        // Persist the inode and all edited indirect blocks, including the
+        // device's write cache, before making detached blocks reusable.
+        TRY(fs().BlockBasedFileSystem::flush_writes());
+        while (!m_blocks_pending_free.is_empty()) {
+            TRY(fs().set_block_allocation_state(m_blocks_pending_free.last(), false));
+            m_blocks_pending_free.take_last();
+        }
+    }
     if (is_directory()) {
         // Unless we're about to go away permanently, invalidate the lookup cache.
         if (m_raw_inode.i_links_count != 0) {
@@ -554,11 +591,6 @@ ErrorOr<void> Ext2FSInode::resize(u64 new_size)
                 // This is a hole, skip it.
                 continue;
             }
-            if (auto result = fs().set_block_allocation_state(block, false); result.is_error()) {
-                dbgln("Ext2FSInode[{}]::resize(): Failed to free block {}: {}", identifier(), block, result.error());
-                return result;
-            }
-            m_raw_inode.i_blocks -= fs().i_blocks_increment();
             TRY(m_block_view.write_block_pointer(bi, 0));
         }
     }
@@ -916,6 +948,9 @@ ErrorOr<void> Ext2FSInode::increment_link_count()
 
 ErrorOr<void> Ext2FSInode::decrement_link_count()
 {
+    // Removing the cache reference must not destroy this inode while its
+    // mutex is still held. Open descriptions retain their own references.
+    NonnullRefPtr<Ext2FSInode> protect { *this };
     MutexLocker locker(m_inode_lock);
     if (fs().is_readonly())
         return EROFS;
@@ -923,11 +958,10 @@ ErrorOr<void> Ext2FSInode::decrement_link_count()
 
     --m_raw_inode.i_links_count;
     set_metadata_dirty(true);
-    if (m_raw_inode.i_links_count == 0)
+    if (m_raw_inode.i_links_count == 0) {
         did_delete_self();
-
-    if (ref_count() == 1 && m_raw_inode.i_links_count == 0)
         fs().uncache_inode(index());
+    }
 
     return {};
 }
@@ -958,11 +992,13 @@ ErrorOr<void> Ext2FSInode::chown(UserID uid, GroupID gid)
 ErrorOr<void> Ext2FSInode::truncate_locked(u64 size)
 {
     VERIFY(m_inode_lock.is_locked());
-    if (static_cast<u64>(m_raw_inode.i_size) == size)
+    if (this->size() == size)
         return {};
     TRY(resize(size));
     set_metadata_dirty(true);
     did_modify_contents();
+    if (!m_blocks_pending_free.is_empty())
+        TRY(flush_metadata());
     return {};
 }
 

@@ -37,10 +37,15 @@ target_link_libraries(fuzz-syscalls PRIVATE LibSystem)
 serenity_test("crash.cpp" Kernel MAIN_ALREADY_DEFINED)
 
 set(LIBTEST_BASED_SOURCES
+    TestBlockCache.cpp
     TestEFault.cpp
     TestEmptyPrivateInodeVMObject.cpp
     TestEmptySharedInodeVMObject.cpp
     TestExt2FS.cpp
+    TestExt2CrashConsistency.cpp
+    TestExt2Capacity.cpp
+    TestExt2Features.cpp
+    TestExt2Unmount.cpp
     TestFileSystemDirentTypes.cpp
     TestInvalidUIDSet.cpp
     TestSFNUtilities.cpp
@@ -56,12 +61,15 @@ set(LIBTEST_BASED_SOURCES
     TestKernelUnveil.cpp
     TestLoopDevice.cpp
     TestMunMap.cpp
+    TestMemoryPressure.cpp
+    TestMprotect.cpp
     TestProcFS.cpp
     TestProcFSWrite.cpp
     TestSigAltStack.cpp
     TestSigHandler.cpp
     TestSignalDispatch.cpp
     TestSymlink.cpp
+    TestThreadSleep.cpp
     TestTCPSocket.cpp
     TestUDPSocket.cpp
     TestWXProtection.cpp

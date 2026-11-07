@@ -36,7 +36,13 @@ ErrorOr<void> ThemesSettingsWidget::setup_interface()
 {
     m_themes = TRY(Gfx::list_installed_system_themes());
 
-    size_t current_theme_index;
+    if (m_themes.is_empty())
+        return Error::from_string_literal("No installed system themes were found.");
+
+    // The active theme may have been removed or supplied as an override.
+    // Keep a valid selection even when its name is not in the installed list.
+    size_t current_theme_index = 0;
+    m_selected_theme = &m_themes.first();
     auto current_theme_name = GUI::ConnectionToWindowServer::the().get_system_theme();
     TRY(m_theme_names.try_ensure_capacity(m_themes.size()));
     for (auto& theme_meta : m_themes) {
@@ -51,6 +57,7 @@ ErrorOr<void> ThemesSettingsWidget::setup_interface()
     m_themes_combo = *find_descendant_of_type_named<GUI::ComboBox>("themes_combo");
     m_themes_combo->set_only_allow_values_from_model(true);
     m_themes_combo->set_model(*GUI::ItemListModel<String>::create(m_theme_names));
+    m_themes_combo->set_enabled(m_themes.size() > 1);
     m_themes_combo->on_change = [this](auto&, GUI::ModelIndex const& index) {
         m_selected_theme = &m_themes.at(index.row());
         auto selected_theme_path = String::from_byte_string(m_selected_theme->path);

@@ -208,10 +208,12 @@ Thread::BlockResult Thread::block_impl(BlockTimeout const& timeout, Blocker& blo
     // to clean up now while we're still holding m_lock
     auto result = blocker.end_blocking({}, did_timeout); // calls was_unblocked internally
 
-    if (timer_was_added && !did_timeout) {
+    if (timer_was_added) {
         // Cancel the timer while not holding any locks. This allows
         // the timer function to complete before we remove it
         // (e.g. if it's on another processor)
+        // Even when the timeout fired, its callback may still be completing on
+        // another processor. Wait for it before this thread can reuse the timer.
         TimerQueue::the().cancel_timer(*m_block_timer);
     }
     if (previous_locked != LockMode::Unlocked) {

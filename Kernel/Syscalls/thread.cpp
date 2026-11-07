@@ -120,8 +120,9 @@ void Process::sys$exit_thread(Userspace<void*> exit_value, Userspace<void*> stac
     PerformanceManager::add_thread_exit_event(*current_thread);
 
     if (stack_location) {
+        Memory::DeferredUnmapCleanup cleanup;
         auto unmap_result = address_space().with([&](auto& space) {
-            return space->unmap_mmap_range(stack_location.vaddr(), stack_size);
+            return space->unmap_mmap_range(stack_location.vaddr(), stack_size, cleanup);
         });
         if (unmap_result.is_error())
             dbgln("Failed to unmap thread stack, terminating thread anyway. Error code: {}", unmap_result.error());

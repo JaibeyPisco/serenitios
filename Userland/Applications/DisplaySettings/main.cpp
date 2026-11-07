@@ -38,7 +38,7 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
 
     auto window = TRY(GUI::SettingsWindow::create("Display Settings"));
     (void)TRY(window->add_tab<DisplaySettings::BackgroundSettingsWidget>("Background"_string, "background"sv, background_settings_changed));
-    (void)TRY(window->add_tab<DisplaySettings::ThemesSettingsWidget>("Themes"_string, "themes"sv, background_settings_changed));
+    (void)TRY(window->add_tab<DisplaySettings::ThemesSettingsWidget>("Appearance"_string, "themes"sv, background_settings_changed));
     (void)TRY(window->add_tab<DisplaySettings::FontSettingsWidget>("Fonts"_string, "fonts"sv));
     (void)TRY(window->add_tab<DisplaySettings::MonitorSettingsWidget>("Monitor"_string, "monitor"sv));
     (void)TRY(window->add_tab<DisplaySettings::DesktopSettingsWidget>("Workspaces"_string, "workspaces"sv));
