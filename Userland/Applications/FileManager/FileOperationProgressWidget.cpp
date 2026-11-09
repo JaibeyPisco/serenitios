@@ -71,40 +71,47 @@ FileOperationProgressWidget::FileOperationProgressWidget(FileOperation operation
 
     m_notifier = Core::Notifier::construct(helper_pipe_fd, Core::Notifier::Type::Read);
     m_notifier->on_activation = [this] {
+        if (!m_helper_pipe)
+            return;
         auto line_buffer_or_error = ByteBuffer::create_zeroed(1 * KiB);
         if (line_buffer_or_error.is_error()) {
-            did_error("Failed to allocate ByteBuffer for reading data."sv);
+            did_error("There was not enough memory to receive the operation result."sv);
             return;
         }
         auto line_buffer = line_buffer_or_error.release_value();
-        auto line_or_error = m_helper_pipe->read_line(line_buffer.bytes());
-        if (line_or_error.is_error() || line_or_error.value().is_empty()) {
-            did_error("Read from pipe returned null."sv);
+        auto line_or_error = m_helper_pipe->read_line_with_resize(line_buffer);
+        if (line_or_error.is_error()) {
+            did_error(ByteString::formatted("Could not receive the operation result: {}", line_or_error.release_error()));
+            return;
+        }
+        if (line_or_error.value().is_empty()) {
+            did_error("The file operation helper stopped unexpectedly.\nCompletion could not be confirmed."sv);
             return;
         }
 
         auto line = line_or_error.release_value();
 
-        auto parts = line.split_view(' ');
-        VERIFY(!parts.is_empty());
-
-        if (parts[0] == "ERROR"sv) {
+        if (line.starts_with("ERROR "sv)) {
             did_error(line.substring_view(6));
             return;
         }
 
-        if (parts[0] == "WARN"sv) {
+        if (line.starts_with("WARN "sv)) {
             did_error(line.substring_view(5));
             return;
         }
 
-        if (parts[0] == "FINISH"sv) {
+        if (line == "FINISH"sv) {
             did_finish();
             return;
         }
 
-        if (parts[0] == "PROGRESS"sv) {
-            VERIFY(parts.size() >= 8);
+        if (line.starts_with("PROGRESS "sv)) {
+            auto parts = line.to_byte_string().split_limit(' ', 8, SplitBehavior::KeepEmpty);
+            if (parts.size() < 8) {
+                did_error("The file operation helper sent an invalid progress update.\nCompletion could not be confirmed."sv);
+                return;
+            }
             did_progress(
                 parts[3].to_number<unsigned>().value_or(0),
                 parts[4].to_number<unsigned>().value_or(0),
@@ -126,15 +133,23 @@ FileOperationProgressWidget::~FileOperationProgressWidget()
 
 void FileOperationProgressWidget::did_finish()
 {
+    if (!m_helper_pipe)
+        return;
     close_pipe();
+    dbgln("File operation finished");
     window()->close();
 }
 
 void FileOperationProgressWidget::did_error(StringView message)
 {
-    // FIXME: Communicate more with the user about errors.
+    if (!m_helper_pipe)
+        return;
     close_pipe();
-    GUI::MessageBox::show(window(), ByteString::formatted("An error occurred: {}", message), "Error"sv, GUI::MessageBox::Type::Error, GUI::MessageBox::InputType::OK);
+    auto title = m_operation == FileOperation::Copy ? "Copy Failed"sv : m_operation == FileOperation::Move ? "Move Failed"sv
+                                                                                                           : "Delete Failed"sv;
+    auto readable_message = String::from_utf8_with_replacement_character(message);
+    dbgln("{}: {}", title, readable_message);
+    GUI::MessageBox::show(window(), ByteString::formatted("{}\n\nSome files may already have changed.\nChanges have not been undone.", readable_message), title, GUI::MessageBox::Type::Error, GUI::MessageBox::InputType::OK);
     window()->close();
 }
 
