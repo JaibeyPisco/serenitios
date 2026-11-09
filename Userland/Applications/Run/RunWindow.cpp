@@ -18,9 +18,11 @@
 #include <LibGUI/FilePicker.h>
 #include <LibGUI/Icon.h>
 #include <LibGUI/ImageWidget.h>
+#include <LibGUI/Label.h>
 #include <LibGUI/MessageBox.h>
 #include <LibGUI/Widget.h>
 #include <LibURL/URL.h>
+#include <errno.h>
 #include <spawn.h>
 #include <stdio.h>
 #include <string.h>
@@ -93,20 +95,39 @@ void RunWindow::event(Core::Event& event)
 void RunWindow::do_run()
 {
     auto run_input = m_path_combo_box->text().trim_whitespace();
+    m_command_error = {};
+    auto& info_label = *main_widget()->find_descendant_of_type_named<GUI::Label>("info");
+    info_label.set_text("Type the name of a program, folder, document,\nor website, and SerenityOS will open it for you."_string);
 
     hide();
 
-    if (run_via_launch(run_input) || run_as_command(run_input)) {
+    if (run_via_launch(run_input)) {
         close();
         return;
     }
 
-    GUI::MessageBox::show_error(this, "Failed to run. Please check your command, path, or address, and try again."sv);
+    auto result = run_as_command(run_input);
+    if (result == CommandResult::Success) {
+        close();
+        return;
+    }
+
+    if (result == CommandResult::Signaled) {
+        // Crash Reporter may already be showing the crash. Keep the command
+        // editable without adding another modal notification on top of it.
+        info_label.set_text(String::from_byte_string(m_command_error).release_value_but_fixme_should_propagate_errors());
+    } else {
+        auto message = m_command_error.is_empty()
+            ? "Failed to run. Please check your command, path, or address, and try again."sv
+            : m_command_error.view();
+        GUI::MessageBox::show_error(this, message);
+    }
 
     show();
+    m_path_combo_box->select_all();
 }
 
-bool RunWindow::run_as_command(ByteString const& run_input)
+RunWindow::CommandResult RunWindow::run_as_command(ByteString const& run_input)
 {
     // Query and use the user's preferred shell.
     // Fallback to "/bin/Shell" if the preferred shell cannot be determined or fails to spawn.
@@ -127,8 +148,10 @@ bool RunWindow::run_as_command(ByteString const& run_input)
     }
 
     auto maybe_child_pid = Core::Process::spawn(shell_path, Array { "-c", run_input.characters() }, {}, Core::Process::KeepAsChild::Yes);
-    if (maybe_child_pid.is_error())
-        return false;
+    if (maybe_child_pid.is_error()) {
+        m_command_error = ByteString::formatted("Could not start the command: {}", maybe_child_pid.release_error());
+        return CommandResult::Failure;
+    }
 
     pid_t child_pid = maybe_child_pid.release_value();
 
@@ -137,23 +160,47 @@ bool RunWindow::run_as_command(ByteString const& run_input)
     // FIXME: Handle failure to save history somehow.
     (void)save_history();
 
-    int status;
-    if (waitpid(child_pid, &status, 0) < 0)
-        return false;
+    int status = 0;
+    pid_t waited_pid;
+    do {
+        waited_pid = waitpid(child_pid, &status, 0);
+    } while (waited_pid < 0 && errno == EINTR);
+
+    if (waited_pid < 0) {
+        m_command_error = ByteString::formatted("Could not wait for the command: {}", strerror(errno));
+        return CommandResult::Failure;
+    }
+
+    if (WIFSIGNALED(status)) {
+        auto signal = WTERMSIG(status);
+        dbgln("Child shell terminated by signal {}", signal);
+        m_command_error = ByteString::formatted("Command terminated by signal {}.\nEdit the command and try again.", signal);
+        return CommandResult::Signaled;
+    }
+
+    if (!WIFEXITED(status)) {
+        m_command_error = "The command did not exit normally. Please try again.";
+        return CommandResult::Failure;
+    }
 
     int child_error = WEXITSTATUS(status);
     dbgln("Child shell exited with code {}", child_error);
 
-    // 127 is typically the shell indicating command not found. 126 for all other errors.
-    if (child_error == 126 || child_error == 127) {
+    if (child_error != 0) {
         // There's an opportunity to remove the history entry here since it failed during its runtime, but other implementations (e.g. Windows 11) don't bother removing the entry.
         // This makes sense, especially for cases where a user is debugging a failing program.
-        return false;
+        if (child_error == 127)
+            m_command_error = "Command not found. Check the command name and try again.";
+        else if (child_error == 126)
+            m_command_error = "The command could not be executed. Check its permissions and try again.";
+        else
+            m_command_error = ByteString::formatted("The command exited with status {}. Edit the command and try again.", child_error);
+        return CommandResult::Failure;
     }
 
     dbgln("Ran via command shell.");
 
-    return true;
+    return CommandResult::Success;
 }
 
 bool RunWindow::run_via_launch(ByteString const& run_input)

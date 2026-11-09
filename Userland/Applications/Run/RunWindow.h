@@ -25,8 +25,14 @@ public:
 private:
     RunWindow();
 
+    enum class CommandResult {
+        Success,
+        Failure,
+        Signaled,
+    };
+
     void do_run();
-    bool run_as_command(ByteString const& run_input);
+    CommandResult run_as_command(ByteString const& run_input);
     bool run_via_launch(ByteString const& run_input);
 
     ByteString history_file_path();
@@ -35,6 +41,7 @@ private:
     void prepend_history(ByteString const& input);
 
     Vector<ByteString> m_path_history;
+    ByteString m_command_error;
     NonnullRefPtr<GUI::ItemListModel<ByteString>> m_path_history_model;
 
     RefPtr<GUI::ImageWidget> m_icon_image_widget;
