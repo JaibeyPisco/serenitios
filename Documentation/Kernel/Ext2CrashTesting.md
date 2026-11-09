@@ -152,3 +152,21 @@ recovery boot path for the installed PC image. Torn-sector writes, physical
 device/cache failures, injected I/O errors, other files, other cut boundaries,
 and concurrent/SMP filesystem workloads remain unvalidated. The user's working
 VirtualBox disk was not used or modified for these tests.
+
+## Content-validation follow-up (2026-11-09)
+
+The workload now synchronizes two additional unrelated witness files, including
+one spanning indirect blocks. Inspection records lengths and SHA-256 hashes for
+the affected files and witnesses, and checks allowed operation states on both
+the original crash disk and its separately repaired copy. An interrupted create
+may be absent or incomplete before synchronization; replacement rename must
+retain either the complete old namespace or the complete new namespace.
+
+`Build/ext2-content-validation-20261109` contains four controls and four
+first-write interruptions. The affected-file and witness checks passed in all
+eight guests, including after repair of interrupted copies. The truncate
+interruption still produced a metadata inconsistency and the strict campaign
+correctly failed. This is improved detection, not a filesystem correction.
+
+Implementation and acceptance gates are tracked in
+[the staged storage plan](TransactionalStorageImplementation.md).

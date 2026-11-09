@@ -49,6 +49,10 @@ public:
 
     ErrorOr<void> prepare_to_unmount(Inode& mount_guest_inode);
 
+    // Filesystems that need a sleeping lifecycle lock during last-detach checks
+    // provide it here, so VFS acquires it before entering mount-table spinlocks.
+    virtual Mutex* unmount_mutex() { return nullptr; }
+
     struct DirectoryEntryView {
         DirectoryEntryView(StringView name, InodeIdentifier, u8 file_type);
 

@@ -31,8 +31,9 @@ reclaim-lock deadlock but do not close the remaining kernel criteria above.
 
 ## Data protection
 
-Five ext2 crash-consistency failures are still blockers. The independent host
-journal reader is a prototype, not kernel journaling. See
+Five ext2 crash-consistency failures are still blockers. Opt-in restricted
+[kernel journal recovery](Kernel/JournalRecovery.md) now exposes recovered
+volumes read-only; ordinary filesystem writes are not journaled. See
 [transaction requirements](Kernel/Ext2Transactions.md) and
 [crash testing](Kernel/Ext2CrashTesting.md).
 

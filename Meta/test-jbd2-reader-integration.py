@@ -8,6 +8,8 @@ e2fsprogs creates records but does not perform replay on the reader's copy.
 Retiring the log below is a test-only shortcut, not a durable recovery utility.
 """
 
+import argparse
+from functools import partial
 import hashlib
 import importlib.util
 import json
@@ -22,7 +24,7 @@ contract = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(contract)
 
 
-def observe(disk, operation, scenario, folder, iteration):
+def observe(disk, operation, scenario, folder, iteration, cpp_reader=None):
     prefix = folder / f"independent-{iteration}"
     prefix.mkdir()
     before = hashlib.sha256(disk.read_bytes()).hexdigest()
@@ -36,6 +38,15 @@ def observe(disk, operation, scenario, folder, iteration):
     uuid = image[1128:1144]
     blocks = struct.unpack_from("<I", image, 1028)[0]
     tids, writes = replay_plan(journal, blocks, set(physical), uuid)
+    cpp_matches = False
+    if cpp_reader is not None:
+        spec = importlib.util.spec_from_file_location("cpp_adapter", Path(__file__).with_name("test-kernel-journal-reader.py"))
+        adapter = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(adapter)
+        cpp_plan = adapter.decode_cpp_plan(adapter.invoke_cpp_reader(cpp_reader, journal, blocks, set(physical), uuid))
+        assert cpp_plan == (tids, writes), "C++ replay plan differs from independent Python reader"
+        tids, writes = cpp_plan
+        cpp_matches = True
     assert len(tids) == (0 if scenario == "uncommitted" else 1)
     assert bool(writes) == (scenario != "uncommitted")
     candidate = prefix / "replayed.ext3"
@@ -67,9 +78,16 @@ def observe(disk, operation, scenario, folder, iteration):
     assert hashlib.sha256(disk.read_bytes()).hexdigest() == before
     (prefix / "result.json").write_text(json.dumps(dict(
         transaction_ids=tids, replayed_blocks=len(writes), source_unchanged=True,
+        source_sha256=before, reader="cpp" if cpp_reader is not None else "python",
+        cpp_plan_matches_python=cpp_matches,
+        cpp_reader_sha256=hashlib.sha256(cpp_reader.read_bytes()).hexdigest() if cpp_reader is not None else None,
         repeated_replay=True, read_only_fsck_clean=True), indent=2) + "\n")
     print(f"Independent replay PASS: {operation}/{scenario}/{iteration}", flush=True)
 
 
 if __name__ == "__main__":
-    contract.main(replay_observer=observe, checksum_v3=True)
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--cpp-reader", type=Path, help="Also compare with this compiled kernel parser adapter and replay its plan")
+    args = parser.parse_args()
+    reader = args.cpp_reader.resolve() if args.cpp_reader else None
+    contract.main(replay_observer=partial(observe, cpp_reader=reader), checksum_v3=True)

@@ -76,6 +76,10 @@ TEST_CASE(ext2_crash_workload)
         VERIFY(close(fd) == 0);
     };
     write_file(sentinel.characters(), 1, 0x7b);
+    // Unrelated acknowledged files span direct and indirect block mappings.
+    // The host verifies all bytes after interruption, not only the sentinel.
+    write_file(ByteString::formatted("{}/witness-small", mountpoint).characters(), 1, 0x19);
+    write_file(ByteString::formatted("{}/witness-indirect", mountpoint).characters(), 37, 0xe3);
     if (strcmp(operation, "create") != 0)
         write_file(victim.characters(), 32, 0x41);
     if (strcmp(operation, "rename") == 0)

@@ -39,6 +39,7 @@ public:
     AK_ENUM_BITWISE_FRIEND_OPERATORS(FeaturesReadOnly);
 
     static ErrorOr<NonnullRefPtr<FileSystem>> try_create(OpenFileDescription&, FileSystemSpecificOptions const&);
+    static ErrorOr<void> validate_mount_boolean_flag(StringView, bool);
 
     virtual ~Ext2FS() override;
 
@@ -49,6 +50,7 @@ public:
 
     virtual bool supports_watchers() const override { return true; }
     virtual bool supports_backing_loop_devices() const override { return true; }
+    virtual Mutex* unmount_mutex() override { return m_replay_journal ? &m_lock : nullptr; }
 
     virtual ErrorOr<void> rename(Inode& old_parent_inode, StringView old_basename, Inode& new_parent_inode, StringView new_basename) override;
 
@@ -67,7 +69,7 @@ public:
 private:
     AK_TYPEDEF_DISTINCT_ORDERED_ID(unsigned, GroupIndex);
 
-    explicit Ext2FS(OpenFileDescription&);
+    explicit Ext2FS(OpenFileDescription&, bool replay_journal);
 
     ext2_super_block const& super_block() const { return m_super_block; }
     ext2_group_desc const& group_descriptor(GroupIndex) const;
@@ -89,6 +91,7 @@ private:
     bool find_block_containing_inode(InodeIndex, BlockIndex& block_index, unsigned& offset) const;
 
     ErrorOr<void> flush_super_block();
+    ErrorOr<void> replay_journal_for_readonly_mount();
 
     virtual ErrorOr<void> initialize_while_locked() override;
     virtual bool is_initialized_while_locked() override;
@@ -123,6 +126,7 @@ private:
     mutable HashMap<InodeIndex, RefPtr<Ext2FSInode>> m_inode_cache;
 
     bool m_super_block_dirty { false };
+    bool const m_replay_journal { false };
     bool m_was_clean_at_mount { false };
     bool m_block_group_descriptors_dirty { false };
 

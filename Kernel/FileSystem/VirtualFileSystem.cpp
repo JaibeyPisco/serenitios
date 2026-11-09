@@ -105,7 +105,7 @@ static constexpr FileSystemInitializer s_initializers[] = {
     { "devpts"sv, "DevPtsFS"sv, false, false, false, {}, DevPtsFS::try_create, validate_mount_boolean_flag_as_invalid, validate_mount_unsigned_integer_flag_as_invalid, validate_mount_signed_integer_flag_as_invalid, validate_mount_ascii_string_flag_as_invalid },
     { "sys"sv, "SysFS"sv, false, false, false, {}, SysFS::try_create, validate_mount_boolean_flag_as_invalid, validate_mount_unsigned_integer_flag_as_invalid, validate_mount_signed_integer_flag_as_invalid, validate_mount_ascii_string_flag_as_invalid },
     { "ram"sv, "RAMFS"sv, false, false, false, {}, RAMFS::try_create, validate_mount_boolean_flag_as_invalid, RAMFS::validate_mount_unsigned_integer_flag, validate_mount_signed_integer_flag_as_invalid, validate_mount_ascii_string_flag_as_invalid },
-    { "ext2"sv, "Ext2FS"sv, true, true, true, Ext2FS::try_create, {}, validate_mount_boolean_flag_as_invalid, validate_mount_unsigned_integer_flag_as_invalid, validate_mount_signed_integer_flag_as_invalid, validate_mount_ascii_string_flag_as_invalid },
+    { "ext2"sv, "Ext2FS"sv, true, true, true, Ext2FS::try_create, {}, Ext2FS::validate_mount_boolean_flag, validate_mount_unsigned_integer_flag_as_invalid, validate_mount_signed_integer_flag_as_invalid, validate_mount_ascii_string_flag_as_invalid },
     { "9p"sv, "Plan9FS"sv, true, true, true, Plan9FS::try_create, {}, validate_mount_boolean_flag_as_invalid, validate_mount_unsigned_integer_flag_as_invalid, validate_mount_signed_integer_flag_as_invalid, validate_mount_ascii_string_flag_as_invalid },
     { "iso9660"sv, "ISO9660FS"sv, true, true, true, ISO9660FS::try_create, {}, validate_mount_boolean_flag_as_invalid, validate_mount_unsigned_integer_flag_as_invalid, validate_mount_signed_integer_flag_as_invalid, validate_mount_ascii_string_flag_as_invalid },
     { "fat"sv, "FATFS"sv, true, true, true, FATFS::try_create, {}, validate_mount_boolean_flag_as_invalid, validate_mount_unsigned_integer_flag_as_invalid, validate_mount_signed_integer_flag_as_invalid, validate_mount_ascii_string_flag_as_invalid },
@@ -198,6 +198,15 @@ ErrorOr<NonnullRefPtr<FileSystem>> create_and_initialize_filesystem_from_mount_f
     RefPtr<FileSystem> fs;
     for (auto& node : file_backed_fs_list) {
         if ((&node.file_description() == &source_description) || (&node.file() == &source_description.file())) {
+            // Recovery must initialize an unmounted source. Reusing an existing
+            // filesystem would skip validation and silently ignore this option.
+            if (file_system_initializer.create_with_fd == Ext2FS::try_create) {
+                auto replay_requested = mount_file.filesystem_specific_options().with_exclusive([](auto const& options) {
+                    return parse_bool_filesystem_specific_option(options, "journal_replay"sv).value_or(false);
+                });
+                if (replay_requested)
+                    return EBUSY;
+            }
             fs = node;
             break;
         }
@@ -311,6 +320,12 @@ ErrorOr<void> VirtualFileSystem::remove_mount(Mount& mount, FileBackedFileSystem
 ErrorOr<void> VirtualFileSystem::unmount(VFSRootContext& context, Inode& guest_inode, StringView custody_path)
 {
     return s_details->file_backed_file_systems_list.with_exclusive([&](auto& file_backed_file_systems_list) -> ErrorOr<void> {
+        // Keep the filesystem alive until its optional lifecycle mutex has been
+        // released. Context::unmount takes mount-table spinlocks internally.
+        NonnullRefPtr<FileSystem> fs = guest_inode.fs();
+        MutexLocker lifecycle_locker;
+        if (auto* mutex = fs->unmount_mutex())
+            lifecycle_locker.attach_and_lock(*mutex);
         return context.unmount(file_backed_file_systems_list, guest_inode, custody_path);
     });
 }

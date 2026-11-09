@@ -6,6 +6,50 @@ permissions:
   contents: read
 
 jobs:
+  transaction-foundations:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install C++ foundation test tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-14 g++-14 ninja-build python3-venv e2fsprogs
+          python3 -m venv /tmp/storage-test-tools
+          /tmp/storage-test-tools/bin/pip install cmake==3.30.3
+      - name: Build only the host AK library
+        run: |
+          /tmp/storage-test-tools/bin/cmake -S Meta/Lagom -B Build/storage-foundation -G Ninja \
+            -DCMAKE_C_COMPILER=gcc-14 -DCMAKE_CXX_COMPILER=g++-14 \
+            -DBUILD_LAGOM=OFF -DENABLE_JAKT=OFF -DENABLE_LAGOM_CCACHE=OFF \
+            -DENABLE_NETWORK_DOWNLOADS=OFF -DENABLE_TIME_ZONE_DATABASE_DOWNLOAD=OFF \
+            -DENABLE_UNICODE_DATABASE_DOWNLOAD=OFF -DENABLE_PUBLIC_SUFFIX_DOWNLOAD=OFF \
+            -DENABLE_CACERT_DOWNLOAD=OFF -DENABLE_ADOBE_ICC_PROFILES_DOWNLOAD=OFF
+          ninja -C Build/storage-foundation AK -j 4
+      - name: Check read-only C++ journal parser and reserved buffers
+        run: |
+          python3 Meta/test-kernel-journal-reader.py --build Build/storage-foundation --integration
+          python3 Meta/test-transaction-buffer.py --build-dir Build/storage-foundation
+          python3 Meta/test-journal-commit.py --build Build/storage-foundation
+          python3 Meta/test-journal-replay.py --build Build/storage-foundation
+          python3 Meta/test-journal-inode.py --build Build/storage-foundation
+          python3 Meta/test-journal-producer-integration.py --build Build/storage-foundation
+          python3 Meta/test-ext2-crash-inspection.py
+      - name: Preserve C++ replay evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cpp-journal-replay-evidence
+          path: |
+            Build/journal-contract-*/results.json
+            Build/journal-contract-*/**/*.log
+            Build/journal-contract-*/**/result.json
+            Build/journal-producer-*/results.json
+            Build/journal-producer-*/**/*.log
+            Build/journal-producer-*/**/result.json
+          if-no-files-found: ignore
+          retention-days: 14
+
   storage-and-recovery:
     runs-on: ubuntu-24.04
     timeout-minutes: 15

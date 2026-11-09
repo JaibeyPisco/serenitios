@@ -149,6 +149,7 @@ set(KERNEL_SOURCES
     FileSystem/Ext2FS/BlockView.cpp
     FileSystem/Ext2FS/FileSystem.cpp
     FileSystem/Ext2FS/Inode.cpp
+    FileSystem/Ext2FS/JournalRecovery.cpp
     FileSystem/FATFS/FileSystem.cpp
     FileSystem/FATFS/Inode.cpp
     FileSystem/FATFS/SFNUtilities.cpp

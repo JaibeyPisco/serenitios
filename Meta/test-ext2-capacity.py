@@ -9,6 +9,7 @@ import importlib.util
 import json
 from pathlib import Path
 import shutil
+import socket
 import subprocess
 import tempfile
 import time
@@ -19,18 +20,25 @@ crash = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(crash)
 
 
-def run_guest(build, root, disk, work, guest_script, marker, timeout, extra_disks=()):
+def run_guest(build, root, disk, work, guest_script, marker, timeout, extra_disks=(), cpus=1, require_test_summary=True, diagnostic_types=None, snapshot_data=False):
+    diagnostic_port = None
+    if cpus > 1:
+        with socket.socket() as listener:
+            listener.bind(("127.0.0.1", 0))
+            diagnostic_port = listener.getsockname()[1]
     cmd = ["qemu-system-x86_64", "-machine", "q35", "-accel", "tcg", "-cpu", "max,-x2apic",
-           "-m", "512M", "-smp", "1", "-kernel", str(build / "Kernel/Kernel"),
-           "-append", f"root=ahci0:0:0 serial_debug disable_kaslr init=/bin/Shell init_args={guest_script}",
+           "-m", "512M", "-smp", str(cpus), "-kernel", str(build / "Kernel/Kernel"),
+           "-append", f"root=ahci0:0:0 serial_debug disable_kaslr {'smp=on ' if cpus > 1 else ''}init=/bin/Shell init_args={guest_script}",
            "-drive", f"file={root},if=none,format=raw,id=root,snapshot=on",
            "-device", "ich9-ahci,id=ahci", "-device", "ide-hd,drive=root,bus=ahci.0",
-           "-drive", f"file={disk},if=none,format=raw,id=test", "-device", "ide-hd,drive=test,bus=ahci.1",
+           "-drive", f"file={disk},if=none,format=raw,id=test" + (",snapshot=on" if snapshot_data else ""), "-device", "ide-hd,drive=test,bus=ahci.1",
            "-display", "none", "-monitor", "none", "-nic", "none", "-no-reboot",
            "-serial", f"file:{work}/serial.log", "-debugcon", f"file:{work}/debug.log"]
     for index, extra in enumerate(extra_disks):
         cmd += ["-drive", f"file={extra},if=none,format=raw,id=extra{index}",
                 "-device", f"ide-hd,drive=extra{index},bus=ahci.{index + 2}"]
+    if diagnostic_port is not None:
+        cmd += ["-gdb", f"tcp:127.0.0.1:{diagnostic_port}"]
     (work / "command.json").write_text(json.dumps(cmd, indent=2) + "\n")
     with (work / "qemu.log").open("w") as log:
         guest = subprocess.Popen(cmd, stdout=log, stderr=log)
@@ -38,13 +46,31 @@ def run_guest(build, root, disk, work, guest_script, marker, timeout, extra_disk
             deadline = time.monotonic() + timeout
             while True:
                 output = (work / "serial.log").read_text(errors="replace") if (work / "serial.log").exists() else ""
-                if marker in output and "All 1 tests passed." in output:
+                if marker in output and (not require_test_summary or "All 1 tests passed." in output):
+                    if cpus > 1 and any(f"Scheduler[{cpu}]: idle loop running" not in output for cpu in range(cpus)):
+                        raise RuntimeError(f"Not all requested CPUs reached the scheduler; see {work}")
                     break
                 if any(marker in output for marker in ("VERIFICATION FAILED", "ASSERTION FAILED", "KERNEL PANIC", "KUBSAN:")) or guest.poll() is not None:
                     raise RuntimeError(f"Guest failed; see {work}")
                 if time.monotonic() > deadline:
                     raise RuntimeError(f"Guest timed out; see {work}")
                 time.sleep(0.1)
+        except Exception as error:
+            (work / "failure.json").write_text(json.dumps(dict(passed=False, error=str(error), cpus=cpus), indent=2) + "\n")
+            if diagnostic_port is not None and guest.poll() is None and shutil.which("gdb"):
+                script = work / "failure.gdb"
+                extra = (f"add-symbol-file {json.dumps(str(diagnostic_types))} 0\n"
+                         f"source {REPO / 'Meta/gdb-dump-kernel-threads.py'}\n") if diagnostic_types else ""
+                script.write_text("set pagination off\nset confirm off\nset architecture i386:x86-64\n"
+                                  f"add-symbol-file {json.dumps(str(build / 'Kernel/Kernel.debug'))} -o 0x2000200000\n"
+                                  f"target remote 127.0.0.1:{diagnostic_port}\ninfo threads\nthread apply all bt\n{extra}detach\n")
+                with (work / "failure-backtrace.log").open("w") as trace:
+                    try:
+                        subprocess.run(["gdb", "-q", "-batch", "-x", str(script)], stdout=trace,
+                                       stderr=subprocess.STDOUT, timeout=20)
+                    except subprocess.TimeoutExpired:
+                        trace.write("Debugger timed out\n")
+            raise
         finally:
             guest.terminate()
             try:

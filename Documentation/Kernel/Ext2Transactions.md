@@ -1,6 +1,16 @@
 # Transactional storage: crash analysis and implementation contract
 
-Status: design, independent host replay prototype and interoperability experiments; no kernel journal writer or replay implementation exists yet. The five failing crash cases remain release blockers. Do not enable a journal on a Serenity system disk with the current driver.
+The implementation contract below is a prior design, not an instruction to
+enable or expand journaling by default. The current scoped decision is recorded
+in [Ext2TruncateRisk.md](Ext2TruncateRisk.md): preserve existing prototypes, use
+isolated development images, and do not restructure the filesystem for the
+repairable interrupted-truncate allocation leak in this stage.
+
+Status: restricted opt-in [kernel read-only recovery](JournalRecovery.md), a
+bounded C++ commit protocol and independent host interoperability experiments.
+Ordinary filesystem operations still have no journal writer integration. The
+five failing crash cases remain release blockers; do not enable a journal on
+an existing Serenity system disk.
 
 ## Observed failures
 
@@ -22,7 +32,11 @@ The reference protocol records block after-images, makes the journal durable, co
 
 Initially accept only a precisely enumerated format, feature set and checksum version. Reject every unimplemented journal feature before writing any filesystem metadata. Bound journal record parsing, validate checksums and block ranges, and prevent journal blocks from being replayed onto the journal itself. Replay must finish successfully before mounting writable; failure must preserve the evidence and refuse writable mount.
 
-The present driver now refuses journal-bearing volumes, unsupported incompatible features, and unsupported read-only-compatible features before its normal dirty-superblock write. This prevents accidentally treating such volumes as plain ext2. It does not add crash atomicity to supported ext2 volumes.
+Default mounts refuse journal-bearing volumes, unsupported incompatible
+features and unsupported read-only-compatible features before the normal
+dirty-superblock write. The explicit restricted recovery option validates and
+replays supported journals before exposing a read-only filesystem. This does
+not add crash atomicity to ordinary ext2 writes.
 
 ## Kernel requirements
 

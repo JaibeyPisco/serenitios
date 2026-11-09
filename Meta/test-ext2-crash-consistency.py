@@ -14,6 +14,7 @@ loss of a real controller's volatile cache. See Documentation/Kernel/Ext2CrashTe
 """
 
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -52,6 +53,37 @@ def dump(image, name, output):
     return output.read_bytes() if output.exists() else None
 
 
+def inspect_contents(image, case, operation, suffix):
+    contents = {name: dump(image, name, case / f"{name}-{suffix}.bin")
+                for name in ("victim", "destination")}
+    victim, destination = contents["victim"], contents["destination"]
+    baseline = b"\x41" * (32 * 4096)
+    replacement = b"\x42" * (32 * 4096)
+    # A create interrupted before its fsync may be absent, empty or partial.
+    # Do not confuse an incomplete new file with loss of acknowledged data.
+    if operation == "create":
+        valid = (victim is None or (len(victim) <= 32 * 4096 and victim == b"\x5a" * len(victim))) and destination is None
+    elif operation == "unlink":
+        valid = victim in (None, baseline) and destination is None
+    elif operation == "rename":
+        valid = (victim, destination) in ((baseline, replacement), (None, baseline))
+    else:
+        valid = victim in (baseline, baseline[:4096]) and destination is None
+    files = {name: {"present": data is not None,
+                    "size": len(data) if data is not None else None,
+                    "sha256": hashlib.sha256(data).hexdigest() if data is not None else None}
+             for name, data in contents.items()}
+    witnesses_intact = True
+    for name, blocks, value in (("witness-small", 1, 0x19), ("witness-indirect", 37, 0xe3)):
+        data = dump(image, name, case / f"{name}-{suffix}.bin")
+        intact = data == bytes([value]) * (blocks * 4096)
+        witnesses_intact &= intact
+        files[name] = {"present": data is not None, "intact": intact,
+                       "size": len(data) if data is not None else None,
+                       "sha256": hashlib.sha256(data).hexdigest() if data is not None else None}
+    return {"allowed_operation_state": valid, "witnesses_intact": witnesses_intact, "files": files}
+
+
 def inspect(case, operation, cut):
     image = case / "disk.ext2"
     fsck = command(["e2fsck", "-f", "-n", image], case / "fsck-original.log", accepted=(0, 4))
@@ -60,6 +92,7 @@ def inspect(case, operation, cut):
         state = struct.unpack("<H", disk.read(2))[0]
     sentinel = dump(image, "sentinel", case / "sentinel-original.bin") == b"\x7b" * 4096
     result = {"fsck_exit": fsck, "state": state, "sentinel_intact": sentinel}
+    result["original_contents"] = inspect_contents(image, case, operation, "original")
     for name in ("victim", "destination"):
         command(["debugfs", "-R", f"stat /{name}", image], case / f"{name}-original.log")
     if cut:
@@ -70,8 +103,10 @@ def inspect(case, operation, cut):
         result["recovered_fsck_exit"] = command(["e2fsck", "-f", "-n", recovered], case / "fsck-recovered.log")
         result["recovered_sentinel_intact"] = (
             dump(recovered, "sentinel", case / "sentinel-recovered.bin") == b"\x7b" * 4096)
+        result["recovered_contents"] = inspect_contents(recovered, case, operation, "recovered")
     else:
         assert fsck == 0 and state == 1 and sentinel, f"invalid control: {case}"
+        assert result["original_contents"]["witnesses_intact"], f"invalid control witnesses: {case}"
         victim = dump(image, "victim", case / "victim-control.bin")
         if operation == "create":
             assert victim == b"\x5a" * (32 * 4096)
@@ -241,17 +276,28 @@ def main():
     failures = [result for result in results
                 if result["fsck_exit"] != 0 or not result["sentinel_intact"]
                 or not result.get("recovered_sentinel_intact", True)
+                or not result["original_contents"]["witnesses_intact"]
+                or not result.get("recovered_contents", {}).get("witnesses_intact", True)
+                or not result["original_contents"]["allowed_operation_state"]
+                or not result.get("recovered_contents", {}).get("allowed_operation_state", True)
                 or result["state"] != (2 if result["cut"] else 1)]
     summary = dict(images_checked=len(results), controls=sum(not result["cut"] for result in results),
                    interrupted=sum(bool(result["cut"]) for result in results),
                    metadata_inconsistencies=sum(result["fsck_exit"] != 0 for result in results),
                    acknowledged_data_loss=sum(not result["sentinel_intact"] for result in results),
                    acknowledged_data_loss_after_repair=sum(not result.get("recovered_sentinel_intact", True) for result in results),
+                   invalid_operation_states=sum(not result["original_contents"]["allowed_operation_state"] for result in results),
+                   invalid_operation_states_after_repair=sum(not result.get("recovered_contents", {}).get("allowed_operation_state", True) for result in results),
+                   witness_losses=sum(not result["original_contents"]["witnesses_intact"] for result in results),
+                   witness_losses_after_repair=sum(not result.get("recovered_contents", {}).get("witnesses_intact", True) for result in results),
                    strict_failures=len(failures))
     (options.output / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
     print(f"{len(results)} images checked; {summary['metadata_inconsistencies']} metadata inconsistencies; "
           f"{summary['acknowledged_data_loss']} acknowledged-data losses; "
           f"{summary['acknowledged_data_loss_after_repair']} acknowledged-data losses after repair. "
+          f"Operation states outside allowed outcomes: {summary['invalid_operation_states']} original / "
+          f"{summary['invalid_operation_states_after_repair']} repaired; witness losses: "
+          f"{summary['witness_losses']} original / {summary['witness_losses_after_repair']} repaired. "
           f"Artifacts: {options.output}", flush=True)
     return 1 if failures else 0
 

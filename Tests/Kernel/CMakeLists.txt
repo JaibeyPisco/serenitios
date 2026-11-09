@@ -45,6 +45,8 @@ set(LIBTEST_BASED_SOURCES
     TestExt2CrashConsistency.cpp
     TestExt2Capacity.cpp
     TestExt2Features.cpp
+    TestExt2JournalReplay.cpp
+    TestExt2Persistence.cpp
     TestExt2Unmount.cpp
     TestFileSystemDirentTypes.cpp
     TestInvalidUIDSet.cpp
@@ -96,5 +98,6 @@ foreach(libtest_source IN LISTS LIBTEST_BASED_SOURCES)
 endforeach()
 
 target_link_libraries(TestPageFaultRace PRIVATE LibThreading)
+target_link_libraries(TestExt2JournalReplay PRIVATE LibCore)
 
 add_subdirectory(POSIX)

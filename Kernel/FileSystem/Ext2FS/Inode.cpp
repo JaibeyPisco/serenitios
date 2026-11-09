@@ -422,7 +422,7 @@ Ext2FSInode::Ext2FSInode(Ext2FS& fs, InodeIndex index)
 
 Ext2FSInode::~Ext2FSInode()
 {
-    if (m_raw_inode.i_links_count == 0) {
+    if (m_raw_inode.i_links_count == 0 && !fs().is_readonly()) {
         // Alas, we have nowhere to propagate any errors that occur here.
         (void)fs().free_inode(*this);
     }
@@ -493,6 +493,8 @@ ErrorOr<void> Ext2FSInode::flush_metadata()
     MutexLocker locker(m_inode_lock);
     if (!is_metadata_dirty() && m_blocks_pending_free.is_empty())
         return {};
+    if (fs().is_readonly())
+        return EROFS;
 
     dbgln_if(EXT2_DEBUG, "Ext2FSInode[{}]::flush_metadata(): Flushing inode", identifier());
     TRY(fs().write_ext2_inode(index(), m_raw_inode));

@@ -14,13 +14,22 @@
 
 namespace Kernel {
 
-ErrorOr<NonnullRefPtr<FileSystem>> Ext2FS::try_create(OpenFileDescription& file_description, FileSystemSpecificOptions const&)
+ErrorOr<NonnullRefPtr<FileSystem>> Ext2FS::try_create(OpenFileDescription& file_description, FileSystemSpecificOptions const& options)
 {
-    return TRY(adopt_nonnull_ref_or_enomem(new (nothrow) Ext2FS(file_description)));
+    auto replay_journal = parse_bool_filesystem_specific_option(options, "journal_replay"sv).value_or(false);
+    return TRY(adopt_nonnull_ref_or_enomem(new (nothrow) Ext2FS(file_description, replay_journal)));
 }
 
-Ext2FS::Ext2FS(OpenFileDescription& file_description)
+ErrorOr<void> Ext2FS::validate_mount_boolean_flag(StringView name, bool)
+{
+    if (name != "journal_replay"sv)
+        return EINVAL;
+    return {};
+}
+
+Ext2FS::Ext2FS(OpenFileDescription& file_description, bool replay_journal)
     : BlockBasedFileSystem(file_description)
+    , m_replay_journal(replay_journal)
 {
 }
 
@@ -97,6 +106,8 @@ ErrorOr<void> Ext2FS::rename(Inode& old_parent_inode, StringView old_basename, I
 
 ErrorOr<void> Ext2FS::flush_super_block()
 {
+    if (is_readonly())
+        return EROFS;
     MutexLocker locker(m_lock);
     auto super_block_buffer = UserOrKernelBuffer::for_kernel_buffer((u8*)&m_super_block);
     auto const superblock_physical_block_count = (sizeof(ext2_super_block) / device_block_size());
@@ -158,15 +169,22 @@ ErrorOr<void> Ext2FS::initialize_while_locked()
     // the superblock dirty. In particular, ignoring an ext3 journal can destroy
     // recovery information even when the volume currently appears clean.
     if (super_block.s_rev_level >= EXT2_DYNAMIC_REV) {
-        constexpr u32 supported_incompat = EXT2_FEATURE_INCOMPAT_FILETYPE;
+        auto supported_incompat = EXT2_FEATURE_INCOMPAT_FILETYPE | (m_replay_journal ? EXT3_FEATURE_INCOMPAT_RECOVER : 0);
         constexpr u32 supported_ro_compat = EXT2_FEATURE_RO_COMPAT_SPARSE_SUPER | EXT2_FEATURE_RO_COMPAT_LARGE_FILE;
-        if ((super_block.s_feature_compat & EXT3_FEATURE_COMPAT_HAS_JOURNAL)
+        if (((super_block.s_feature_compat & EXT3_FEATURE_COMPAT_HAS_JOURNAL) && !m_replay_journal)
             || (super_block.s_feature_incompat & ~supported_incompat)
             || (super_block.s_feature_ro_compat & ~supported_ro_compat)) {
             dmesgln("Ext2FS: Unsupported filesystem features; refusing mount without modifying the volume");
             return ENOTSUP;
         }
     }
+
+    if (m_replay_journal && (super_block.s_rev_level != EXT2_DYNAMIC_REV || !(super_block.s_feature_compat & EXT3_FEATURE_COMPAT_HAS_JOURNAL)))
+        return ENOTSUP;
+    // Validate disk-controlled shift/divisors before the geometry macros.
+    if (super_block.s_log_block_size > 2 || super_block.s_log_frag_size < 0 || super_block.s_log_frag_size > 2
+        || super_block.s_blocks_per_group == 0 || super_block.s_inodes_per_group == 0)
+        return EINVAL;
 
     if (super_block.s_state == EXT2_ERROR_FS)
         dmesgln("Ext2FS: Was not unmounted cleanly, file system may be erroneous!");
@@ -184,6 +202,13 @@ ErrorOr<void> Ext2FS::initialize_while_locked()
 
     set_logical_block_size(EXT2_BLOCK_SIZE(&super_block));
     set_fragment_size(EXT2_FRAG_SIZE(&super_block));
+
+    if (m_replay_journal) {
+        // Initialization holds only sleeping locks. No normal block cache or
+        // inode exists yet, so recovery cannot race filesystem writeback.
+        TRY(replay_journal_for_readonly_mount());
+        set_readonly();
+    }
 
     // Note: This depends on the block size being available.
     TRY(BlockBasedFileSystem::initialize_while_locked());
@@ -213,6 +238,11 @@ ErrorOr<void> Ext2FS::initialize_while_locked()
     }
 
     m_root_inode = TRY(build_root_inode());
+
+    if (m_replay_journal) {
+        dmesgln("Ext2FS: Journal recovery completed; mounting read-only");
+        return {};
+    }
 
     // Set filesystem to "error" state until we unmount cleanly.
     dmesgln("Ext2FS: Mount successful, setting superblock to error state.");
@@ -334,6 +364,8 @@ u64 Ext2FS::usable_inode_size(ext2_inode_large const& inode) const
 
 ErrorOr<void> Ext2FS::write_ext2_inode(InodeIndex inode, ext2_inode_large const& e2inode)
 {
+    if (is_readonly())
+        return EROFS;
     BlockIndex block_index;
     unsigned offset;
     if (!find_block_containing_inode(inode, block_index, offset))
@@ -693,6 +725,21 @@ u64 Ext2FS::free_inode_count() const
 
 ErrorOr<void> Ext2FS::prepare_to_clear_last_mount(Inode& mount_guest_inode)
 {
+    if (m_replay_journal) {
+        // VFS acquired this sleeping lock before its mount-table spinlocks.
+        // Keep cached inodes alive until the last filesystem reference is
+        // released outside those spinlocks; this branch does no I/O/allocation.
+        VERIFY(m_lock.is_exclusively_locked_by_current_thread());
+        auto root_reference_limit = (&mount_guest_inode == m_root_inode.ptr()) ? 3u : 1u;
+        if (m_root_inode && m_root_inode->ref_count() > root_reference_limit)
+            return EBUSY;
+        for (auto const& it : m_inode_cache) {
+            auto reference_limit = (it.value.ptr() == &mount_guest_inode) ? 3u : 1u;
+            if (it.value && it.value->ref_count() > reference_limit)
+                return EBUSY;
+        }
+        return {};
+    }
     // Flush inode metadata without holding the filesystem lock: inode operations
     // acquire the inode lock before the filesystem lock.
     Vector<NonnullRefPtr<Ext2FSInode>> inodes;
@@ -763,6 +810,8 @@ ErrorOr<void> Ext2FS::prepare_to_clear_last_mount(Inode& mount_guest_inode)
 
 ErrorOr<void> Ext2FS::free_inode(Ext2FSInode& inode)
 {
+    if (is_readonly())
+        return EROFS;
     MutexLocker locker(m_lock);
     VERIFY(inode.m_raw_inode.i_links_count == 0);
     dbgln_if(EXT2_DEBUG, "Ext2FS[{}]::free_inode(): Inode {} has no more links, time to delete!", fsid(), inode.index());
@@ -813,6 +862,8 @@ ErrorOr<void> Ext2FS::flush_block_group_descriptor_table()
 
 ErrorOr<void> Ext2FS::flush_writes()
 {
+    if (m_replay_journal)
+        return {};
     {
         MutexLocker locker(m_lock);
         if (m_super_block_dirty) {
