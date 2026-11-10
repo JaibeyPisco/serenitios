@@ -81,29 +81,23 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
         while (it.has_next()) {
             auto child_path = it.next_full_path();
             if (FileSystem::is_link(child_path))
-                return {};
+                return Error::from_string_literal("Symbolic links are not supported in ZIP creation");
             if (!FileSystem::is_directory(child_path)) {
-                auto result = add_file(child_path);
-                if (result.is_error())
-                    warnln("Couldn't add file '{}': {}", child_path, result.error());
+                TRY(add_file(child_path));
             } else {
-                auto result = handle_directory(child_path, handle_directory);
-                if (result.is_error())
-                    warnln("Couldn't add directory '{}': {}", child_path, result.error());
+                TRY(handle_directory(child_path, handle_directory));
             }
         }
+        if (it.has_error())
+            return it.error();
         return {};
     };
 
     for (auto const& source_path : source_paths) {
         if (FileSystem::is_directory(source_path)) {
-            auto result = add_directory(source_path, add_directory);
-            if (result.is_error())
-                warnln("Couldn't add directory '{}': {}", source_path, result.error());
+            TRY(add_directory(source_path, add_directory));
         } else {
-            auto result = add_file(source_path);
-            if (result.is_error())
-                warnln("Couldn't add file '{}': {}", source_path, result.error());
+            TRY(add_file(source_path));
         }
     }
 

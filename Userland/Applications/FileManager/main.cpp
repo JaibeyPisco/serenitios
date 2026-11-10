@@ -7,6 +7,7 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include "ArchiveOperations.h"
 #include "DesktopWidget.h"
 #include "DirectoryView.h"
 #include "FileUtils.h"
@@ -73,11 +74,6 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
 {
     TRY(Core::System::pledge("stdio thread recvfd sendfd unix cpath rpath wpath fattr proc exec sigaction"));
 
-    struct sigaction act = {};
-    act.sa_flags = SA_NOCLDWAIT;
-    act.sa_handler = SIG_IGN;
-    TRY(Core::System::sigaction(SIGCHLD, &act, nullptr));
-
     Core::ArgsParser args_parser;
     bool is_desktop_mode { false };
     bool is_selection_mode { false };
@@ -90,8 +86,10 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     args_parser.parse(arguments);
 
     auto app = TRY(GUI::Application::create(arguments));
+    initialize_archive_operations();
 
-    TRY(Core::System::pledge("stdio thread recvfd sendfd cpath rpath wpath fattr proc exec unix"));
+    // EventLoop restores registered signal handlers during process shutdown.
+    TRY(Core::System::pledge("stdio thread recvfd sendfd cpath rpath wpath fattr proc exec unix sigaction"));
 
     Config::pledge_domains({ "FileManager", "WindowManager", "Maps" });
     Config::monitor_domain("FileManager");
@@ -242,35 +240,8 @@ void do_create_archive(Vector<ByteString> const& selected_file_paths, GUI::Windo
     }
     auto output_path = path_builder.to_byte_string();
 
-    pid_t zip_pid = fork();
-    if (zip_pid < 0) {
-        perror("fork");
-        VERIFY_NOT_REACHED();
-    }
-
-    if (!zip_pid) {
-        Vector<ByteString> relative_paths;
-        Vector<char const*> arg_list;
-        arg_list.append("/bin/zip");
-        arg_list.append("-r");
-        arg_list.append("-f");
-        arg_list.append(output_path.characters());
-        for (auto const& path : selected_file_paths) {
-            relative_paths.append(LexicalPath::relative_path(path, output_directory_path.dirname()));
-            arg_list.append(relative_paths.last().characters());
-        }
-        arg_list.append(nullptr);
-        int rc = execvp("/bin/zip", const_cast<char* const*>(arg_list.data()));
-        if (rc < 0) {
-            perror("execvp");
-            _exit(1);
-        }
-    } else {
-        int status;
-        int rc = waitpid(zip_pid, &status, 0);
-        if (rc < 0 || !WIFEXITED(status) || WEXITSTATUS(status) != 0)
-            GUI::MessageBox::show(window, "Could not create archive"sv, "Archive Error"sv, GUI::MessageBox::Type::Error);
-    }
+    if (auto result = create_archive(selected_file_paths, output_path, window); result.is_error())
+        GUI::MessageBox::show_error(window, ByteString::formatted("Could not create archive: {}", result.release_error()));
 }
 
 void do_set_wallpaper(ByteString const& file_path, GUI::Window* window)
@@ -295,25 +266,8 @@ void do_unzip_archive(Vector<ByteString> const& selected_file_paths, GUI::Window
     ByteString archive_file_path = selected_file_paths.first();
     ByteString output_directory_path = archive_file_path.substring(0, archive_file_path.length() - 4);
 
-    pid_t unzip_pid = fork();
-    if (unzip_pid < 0) {
-        perror("fork");
-        VERIFY_NOT_REACHED();
-    }
-
-    if (!unzip_pid) {
-        int rc = execlp("/bin/unzip", "/bin/unzip", "-d", output_directory_path.characters(), archive_file_path.characters(), nullptr);
-        if (rc < 0) {
-            perror("execlp");
-            _exit(1);
-        }
-    } else {
-        // FIXME: this could probably be tied in with the new file operation progress tracking
-        int status;
-        int rc = waitpid(unzip_pid, &status, 0);
-        if (rc < 0 || !WIFEXITED(status) || WEXITSTATUS(status) != 0)
-            GUI::MessageBox::show(window, "Could not extract archive"sv, "Extract Archive Error"sv, GUI::MessageBox::Type::Error);
-    }
+    if (auto result = extract_archive(archive_file_path, output_directory_path, window); result.is_error())
+        GUI::MessageBox::show_error(window, ByteString::formatted("Could not extract archive: {}", result.release_error()));
 }
 
 void show_properties(ByteString const& container_dir_path, ByteString const& path, Vector<ByteString> const& selected, GUI::Window* window)
@@ -988,8 +942,13 @@ ErrorOr<int> run_in_windowed_mode(ByteString const& initial_location, ByteString
     file_menu->add_separator();
     file_menu->add_action(properties_action);
     file_menu->add_separator();
-    file_menu->add_action(GUI::CommonActions::make_quit_action([](auto&) {
-        GUI::Application::the()->quit();
+    file_menu->add_action(GUI::CommonActions::make_quit_action([window = WeakPtr<GUI::Window>(window)](auto&) {
+        if (archive_operations_in_progress()) {
+            if (window)
+                window->close();
+        } else {
+            GUI::Application::the()->quit();
+        }
     }));
 
     auto edit_menu = window->add_menu("&Edit"_string);

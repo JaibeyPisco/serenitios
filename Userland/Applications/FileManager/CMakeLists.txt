@@ -15,6 +15,7 @@ stringify_gml(PropertiesWindowImageTab.gml PropertiesWindowImageTabGML.h propert
 stringify_gml(PropertiesWindowPDFTab.gml PropertiesWindowPDFTabGML.h properties_window_pdf_tab_gml)
 
 set(SOURCES
+    ArchiveOperations.cpp
     DesktopWidget.cpp
     DirectoryView.cpp
     FileOperationProgressWidget.cpp
