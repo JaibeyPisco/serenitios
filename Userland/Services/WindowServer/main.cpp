@@ -130,10 +130,9 @@ ErrorOr<int> serenity_main(Main::Arguments)
 
     WindowServer::g_config = TRY(Core::ConfigFile::open("/etc/WindowServer.ini", Core::ConfigFile::AllowWriting::Yes));
     auto theme_name = WindowServer::g_config->read_entry("Theme", "Name", "Default");
-    // Older installations can name a retired theme. Migrate the preference
-    // before loading resources so removing those themes cannot block login.
-    if (theme_name != "Default") {
-        dbgln("Migrating retired theme '{}' to Serenity", theme_name);
+    // Preserve installed themes, while recovering preferences for removed ones.
+    if (theme_name != "Default" && !FileSystem::is_regular_file(ByteString::formatted("/res/themes/{}.ini", theme_name))) {
+        dbgln("Migrating missing theme '{}' to Default", theme_name);
         theme_name = "Default";
         WindowServer::g_config->write_entry("Theme", "Name", theme_name);
         TRY(WindowServer::g_config->sync());
