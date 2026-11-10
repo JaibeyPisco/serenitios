@@ -43,35 +43,40 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
         return 0;
     }
 
-    auto dark = TRY(load_palette("/res/themes/Modern Dark.ini"));
+    bool light = mode == "light"sv || mode == "files-light"sv;
+    auto theme_path = light ? "/res/themes/Modern Light.ini" : "/res/themes/Modern Dark.ini";
+    auto candidate = TRY(load_palette(theme_path));
     auto standard = TRY(load_palette("/res/themes/Default.ini"));
-    auto config = TRY(Core::ConfigFile::open("/res/themes/Modern Dark.ini"));
+    auto config = TRY(Core::ConfigFile::open(theme_path));
     size_t count = 0;
 #define CHECK_COLOR(role)                                                           \
     do {                                                                            \
         auto parsed = Gfx::Color::from_string(config->read_entry("Colors", #role)); \
         VERIFY(parsed.has_value());                                                 \
-        VERIFY(dark.color(Gfx::ColorRole::role) == parsed.value());                 \
+        VERIFY(candidate.color(Gfx::ColorRole::role) == parsed.value());            \
         ++count;                                                                    \
     } while (0);
     ENUMERATE_COLOR_ROLES(CHECK_COLOR)
 #undef CHECK_COLOR
-#define CHECK_METRIC(role) VERIFY(dark.metric(Gfx::MetricRole::role) == standard.metric(Gfx::MetricRole::role));
+#define CHECK_METRIC(role) VERIFY(candidate.metric(Gfx::MetricRole::role) == standard.metric(Gfx::MetricRole::role));
     ENUMERATE_METRIC_ROLES(CHECK_METRIC)
 #undef CHECK_METRIC
-    VERIFY(dark.is_dark());
+    VERIFY(candidate.is_dark() == !light);
     VERIFY(!standard.is_dark());
-    if (mode == "files"sv) {
-        dbgln("THEME FILES PASS: {} explicit colors match the real loader; all metrics match Default", count);
+    if (mode == "files"sv || mode == "files-light"sv) {
+        dbgln("THEME FILES PASS: {} {} explicit colors match the real loader; all metrics match Default", mode, count);
         return 0;
     }
 
-    VERIFY(mode == "dark"sv || mode == "default"sv);
+    VERIFY(mode == "dark"sv || mode == "light"sv || mode == "default"sv);
     auto app = TRY(GUI::Application::create(arguments));
-    auto expected = mode == "dark"sv ? dark : standard;
+    auto expected = mode == "default"sv ? standard : candidate;
     auto theme_name = GUI::ConnectionToWindowServer::the().get_system_theme();
     // Older images can omit the preference and use the startup default.
-    VERIFY(mode == "dark"sv ? theme_name == "Modern Dark"sv : theme_name.is_empty() || theme_name == "Default"sv);
+    if (mode == "default"sv)
+        VERIFY(theme_name.is_empty() || theme_name == "Default"sv);
+    else
+        VERIFY(theme_name == (light ? "Modern Light"sv : "Modern Dark"sv));
     auto actual = app->palette();
 #define CHECK_LIVE_COLOR(role) VERIFY(actual.color(Gfx::ColorRole::role) == expected.color(Gfx::ColorRole::role));
     ENUMERATE_COLOR_ROLES(CHECK_LIVE_COLOR)

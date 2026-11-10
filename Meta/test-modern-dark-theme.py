@@ -2,12 +2,13 @@
 # Copyright (c) 2026, the SerenityOS developers.
 # SPDX-License-Identifier: BSD-2-Clause
 
-"""Check Modern Dark's explicit loader roles, unchanged geometry and contrast.
+"""Check modern themes' explicit loader roles, unchanged geometry and contrast.
 
 This is a resource check, not a substitute for the guest loader/live-palette
 fixture and actual Appearance, input, error-dialog and performance verification.
 """
 
+import argparse
 import configparser
 import json
 from pathlib import Path
@@ -40,37 +41,40 @@ def contrast(first, second):
 
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--theme", choices=("Modern Dark", "Modern Light"), default="Modern Dark")
+    args = parser.parse_args()
     header = (REPO / "Userland/Libraries/LibGfx/SystemTheme.h").read_text()
-    dark = read(REPO / "Base/res/themes/Modern Dark.ini")
+    candidate = read(REPO / "Base/res/themes" / f"{args.theme}.ini")
     default = read(REPO / "Base/res/themes/Default.ini")
     sections = {"COLOR": "Colors", "ALIGNMENT": "Alignments", "WINDOW_THEME": "Window",
                 "FLAG": "Flags", "METRIC": "Metrics", "PATH": "Paths"}
     for category, section in sections.items():
         expected = set(roles(header, category))
-        actual = set(dark[section])
+        actual = set(candidate[section])
         assert actual == expected, (section, "missing", expected - actual, "unknown", actual - expected)
-    for name, value in dark["Colors"].items():
+    for name, value in candidate["Colors"].items():
         assert re.fullmatch(r"#[0-9a-fA-F]{6}([0-9a-fA-F]{2})?", value), (name, value)
         # Preserve only the alpha already used by Default for disabled title
         # effects and rubber-band selection; no translucent surface is added.
         if len(value) == 9:
             assert value.lower() == default["Colors"][name].lower(), name
     metric_defaults = {"TitleButtonInactiveAlpha": "255"}
-    for name, value in dark["Metrics"].items():
+    for name, value in candidate["Metrics"].items():
         assert value == default["Metrics"].get(name, metric_defaults.get(name)), name
-    assert dark["Alignments"] == default["Alignments"]
-    assert dark["Window"]["WindowTheme"] == "Classic"
-    assert dark["Flags"]["IsDark"] == "true"
-    assert dark["Flags"]["TitleButtonsIconOnly"] == default["Flags"]["TitleButtonsIconOnly"]
-    scheme = read(REPO / "Base" / dark["Paths"]["ColorScheme"].lstrip("/"))
-    assert dark["Flags"]["BoldTextAsBright"] == scheme["Options"]["ShowBoldTextAsBright"]
-    for name, value in dark["Paths"].items():
+    assert candidate["Alignments"] == default["Alignments"]
+    assert candidate["Window"]["WindowTheme"] == "Classic"
+    assert candidate["Flags"]["IsDark"] == ("true" if args.theme == "Modern Dark" else "false")
+    assert candidate["Flags"]["TitleButtonsIconOnly"] == default["Flags"]["TitleButtonsIconOnly"]
+    scheme = read(REPO / "Base" / candidate["Paths"]["ColorScheme"].lstrip("/"))
+    assert candidate["Flags"]["BoldTextAsBright"] == scheme["Options"]["ShowBoldTextAsBright"]
+    for name, value in candidate["Paths"].items():
         if value:
             assert (REPO / "Base" / value.lstrip("/")).exists(), (name, value)
         if "Shadow" in name:
             assert value == default["Paths"].get(name, ""), name
     for icon in ("close", "close-modified", "minimize", "maximize", "restore"):
-        assert (REPO / "Base" / dark["Paths"]["TitleButtonIcons"].lstrip("/") / f"window-{icon}.png").is_file()
+        assert (REPO / "Base" / candidate["Paths"]["TitleButtonIcons"].lstrip("/") / f"window-{icon}.png").is_file()
 
     pairs = [("WindowText", "Window", 4.5), ("BaseText", "Base", 4.5),
              ("ButtonText", "Button", 4.5), ("ButtonText", "HoverHighlight", 4.5),
@@ -83,13 +87,13 @@ def main():
              ("ThreedShadow1", "Button", 3), ("Accent", "Button", 3),
              ("Accent", "HoverHighlight", 3), ("FocusOutline", "Button", 3),
              ("SelectionText", "Accent", 3)]
-    pairs += [(name, "Base", 4.5) for name in dark["Colors"] if name.startswith("Syntax")]
+    pairs += [(name, "Base", 4.5) for name in candidate["Colors"] if name.startswith("Syntax")]
     results = []
     for foreground, background, target in pairs:
-        ratio = contrast(dark["Colors"][foreground], dark["Colors"][background])
+        ratio = contrast(candidate["Colors"][foreground], candidate["Colors"][background])
         assert ratio >= target, (foreground, background, ratio, target)
         results.append(dict(foreground=foreground, background=background, ratio=round(ratio, 2), target=target))
-    print(json.dumps(dict(resource_checks_passed=True, explicit_colors=len(dark["Colors"]),
+    print(json.dumps(dict(theme=args.theme, resource_checks_passed=True, explicit_colors=len(candidate["Colors"]),
                           unchanged_metrics=True, contrast_pairs=results,
                           guest_and_visual_tests_still_required=True), indent=2))
 
