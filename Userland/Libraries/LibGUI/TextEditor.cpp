@@ -938,6 +938,14 @@ void TextEditor::paint_event(PaintEvent& event)
 
     if (is_enabled() && is_focused() && !focus_preempted() && m_cursor_state && !is_displayonly())
         painter.fill_rect(cursor_content_rect(), palette().text_cursor());
+
+    if (is_single_line() && is_enabled() && is_focused() && frame_style() != Gfx::FrameStyle::NoFrame && palette().window_theme_provider(Gfx::WindowThemeRole::WindowTheme) == Gfx::WindowThemeProvider::Modern) {
+        Painter border_painter(*this);
+        border_painter.add_clip_rect(event.rect());
+        border_painter.draw_rect(rect(), palette().focus_outline());
+        if (frame_thickness() >= 2)
+            border_painter.draw_rect(rect().shrunken(2, 2), palette().focus_outline());
+    }
 }
 
 Optional<UISize> TextEditor::calculated_min_size() const
@@ -1658,6 +1666,8 @@ void TextEditor::focusin_event(FocusEvent& event)
     update_cursor();
     stop_timer();
     start_timer(500);
+    if (is_single_line() && palette().window_theme_provider(Gfx::WindowThemeRole::WindowTheme) == Gfx::WindowThemeProvider::Modern)
+        update();
     if (on_focusin)
         on_focusin();
 }
@@ -1667,6 +1677,8 @@ void TextEditor::focusout_event(FocusEvent&)
     if (is_displayonly() && has_selection())
         m_selection.clear();
     stop_timer();
+    if (is_single_line() && palette().window_theme_provider(Gfx::WindowThemeRole::WindowTheme) == Gfx::WindowThemeProvider::Modern)
+        update();
     if (on_focusout)
         on_focusout();
 }

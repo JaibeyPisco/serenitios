@@ -13,6 +13,8 @@ namespace Gfx::DesignMetrics {
 constexpr int spacing = 8;
 constexpr int content_margin = 12;
 constexpr int control_height = 28;
+// Opt-in for verified forms; compact controls retain control_height.
+constexpr int standard_control_height = 32;
 constexpr int control_radius = 5;
 constexpr int indicator_radius = 3;
 constexpr int settings_width = 480;

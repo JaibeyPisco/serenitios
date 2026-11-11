@@ -14,8 +14,32 @@
 #include <LibGUI/SettingsWindow.h>
 #include <LibGUI/Widget.h>
 #include <LibGfx/DesignMetrics.h>
+#include <LibGfx/Palette.h>
 
 namespace GUI {
+
+// Only the footer opts into standard density. Tab contents and global widget
+// metrics remain compact, and switching back to Classic restores its height.
+class SettingsButtonContainer final : public Widget {
+    C_OBJECT(SettingsButtonContainer)
+public:
+    void update_density()
+    {
+        auto height = palette().window_theme_provider(Gfx::WindowThemeRole::WindowTheme) == Gfx::WindowThemeProvider::Modern ? Gfx::DesignMetrics::standard_control_height : Gfx::DesignMetrics::control_height;
+        for_each_child_of_type<Button>([&](auto& button) {
+            button.set_fixed_height(height);
+            return IterationDecision::Continue;
+        });
+    }
+
+private:
+    SettingsButtonContainer() = default;
+    virtual void theme_change_event(ThemeChangeEvent& event) override
+    {
+        Widget::theme_change_event(event);
+        update_density();
+    }
+};
 
 void SettingsWindow::set_modified(bool modified)
 {
@@ -39,7 +63,7 @@ ErrorOr<NonnullRefPtr<SettingsWindow>> SettingsWindow::create(ByteString title, 
 
     window->m_tab_widget = main_widget->add<GUI::TabWidget>();
 
-    auto& button_container = main_widget->add<GUI::Widget>();
+    auto& button_container = main_widget->add<SettingsButtonContainer>();
     button_container.set_preferred_size({ SpecialDimension::Grow, SpecialDimension::Fit });
     button_container.set_layout<GUI::HorizontalBoxLayout>(GUI::Margins {}, Gfx::DesignMetrics::spacing);
 
@@ -66,10 +90,7 @@ ErrorOr<NonnullRefPtr<SettingsWindow>> SettingsWindow::create(ByteString title, 
 
     window->m_apply_button = button_container.add<GUI::DialogButton>("Apply"_string);
     window->m_apply_button->set_enabled(false);
-    for (auto* button : { window->m_ok_button.ptr(), window->m_cancel_button.ptr(), window->m_apply_button.ptr(), window->m_reset_button.ptr() }) {
-        if (button)
-            button->set_fixed_height(Gfx::DesignMetrics::control_height);
-    }
+    button_container.update_density();
     window->m_apply_button->on_click = [window = window->make_weak_ptr<SettingsWindow>()](auto) {
         window->apply_settings();
     };

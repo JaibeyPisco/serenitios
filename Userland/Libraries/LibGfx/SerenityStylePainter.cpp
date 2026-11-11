@@ -24,6 +24,18 @@ static void rounded_surface(Painter& painter, IntRect const& rect, Color fill, C
 
 void SerenityStylePainter::paint_button(Painter& painter, IntRect const& rect, Palette const& palette, ButtonStyle style, bool pressed, bool hovered, bool checked, bool enabled, bool focused, bool default_button)
 {
+    if (palette.window_theme_provider(WindowThemeRole::WindowTheme) == WindowThemeProvider::Modern) {
+        auto fill = !enabled ? palette.window() : pressed || checked ? palette.inactive_selection()
+            : hovered                                                ? palette.hover_highlight()
+                                                                     : palette.button();
+        auto border = !enabled ? palette.disabled_text_front() : focused ? palette.focus_outline()
+            : default_button || checked                                  ? palette.accent()
+                                                                         : palette.threed_shadow1();
+        if (style == ButtonStyle::Coolbar && !pressed && !hovered && !checked && !focused)
+            return;
+        rounded_surface(painter, rect, fill, border, DesignMetrics::control_radius, enabled && focused ? 2 : 1);
+        return;
+    }
     auto fill = palette.button();
     auto border = palette.threed_shadow1();
     if (!enabled) {
@@ -43,6 +55,14 @@ void SerenityStylePainter::paint_button(Painter& painter, IntRect const& rect, P
 
 void SerenityStylePainter::paint_tab_button(Painter& painter, IntRect const& rect, Palette const& palette, bool active, bool hovered, bool enabled, TabPosition position, bool in_active_window, bool accented)
 {
+    if (palette.window_theme_provider(WindowThemeRole::WindowTheme) == WindowThemeProvider::Modern) {
+        auto fill = active ? palette.base() : enabled && hovered ? palette.hover_highlight()
+                                                                 : palette.window();
+        auto border = !enabled ? palette.disabled_text_front() : active && accented && in_active_window ? palette.accent()
+                                                                                                        : palette.threed_shadow1();
+        rounded_surface(painter, rect, fill, border, DesignMetrics::control_radius);
+        return;
+    }
     auto fill = active ? palette.base() : palette.window();
     if (hovered && enabled && !active)
         fill = palette.hover_highlight();
@@ -88,6 +108,21 @@ void SerenityStylePainter::paint_frame(Painter& painter, IntRect const& rect, Pa
 
 void SerenityStylePainter::paint_check_box(Painter& painter, IntRect const& rect, Palette const& palette, bool enabled, bool checked, bool pressed)
 {
+    if (palette.window_theme_provider(WindowThemeRole::WindowTheme) == WindowThemeProvider::Modern) {
+        auto border = enabled ? checked ? palette.accent() : palette.threed_shadow1() : palette.disabled_text_front();
+        auto fill = !enabled ? palette.window() : pressed ? palette.inactive_selection()
+            : checked                                     ? palette.accent()
+                                                          : palette.base();
+        rounded_surface(painter, rect, fill, border, DesignMetrics::indicator_radius);
+        if (checked && rect.width() >= 9 && rect.height() >= 9) {
+            auto ink = !enabled ? palette.disabled_text_front() : pressed ? palette.base_text()
+                                                                          : palette.selection_text();
+            auto center = rect.center();
+            painter.draw_line(center.translated(-3, 0), center.translated(-1, 2), ink, 2);
+            painter.draw_line(center.translated(-1, 2), center.translated(4, -3), ink, 2);
+        }
+        return;
+    }
     auto color = enabled ? palette.accent() : palette.disabled_text_front();
     auto fill = checked ? color : (pressed ? palette.hover_highlight() : palette.base());
     rounded_surface(painter, rect, fill, checked ? color : palette.threed_shadow1(), DesignMetrics::indicator_radius);

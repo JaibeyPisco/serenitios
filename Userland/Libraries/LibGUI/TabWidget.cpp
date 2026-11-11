@@ -328,7 +328,13 @@ void TabWidget::paint_event(PaintEvent& event)
             focus_rect.align_within(tab_button_content_rect, m_text_alignment);
             focus_rect.inflate(6, 4);
 
-            painter.draw_focus_rect(focus_rect, palette().focus_outline());
+            if (palette().window_theme_provider(Gfx::WindowThemeRole::WindowTheme) == Gfx::WindowThemeProvider::Modern) {
+                focus_rect.intersect(button_rect.shrunken(4, 4));
+                painter.draw_rect(focus_rect, palette().focus_outline());
+                painter.draw_rect(focus_rect.shrunken(2, 2), palette().focus_outline());
+            } else {
+                painter.draw_focus_rect(focus_rect, palette().focus_outline());
+            }
         }
 
         if (m_tab_position == TabPosition::Top) {

@@ -79,8 +79,15 @@ void CheckBox::paint_event(PaintEvent& event)
 
     paint_text(painter, text_rect, font(), Gfx::TextAlignment::TopLeft);
 
-    if (is_focused())
-        painter.draw_focus_rect(text_rect.inflated(6, 6), palette().focus_outline());
+    if (is_focused()) {
+        if (palette().window_theme_provider(Gfx::WindowThemeRole::WindowTheme) == Gfx::WindowThemeProvider::Modern) {
+            auto focus = rect().shrunken(2, 2);
+            painter.draw_rect(focus, palette().focus_outline());
+            painter.draw_rect(focus.shrunken(2, 2), palette().focus_outline());
+        } else {
+            painter.draw_focus_rect(text_rect.inflated(6, 6), palette().focus_outline());
+        }
+    }
 }
 
 void CheckBox::click(unsigned)
