@@ -16,6 +16,16 @@ public:
     ClassicWindowTheme() = default;
     virtual ~ClassicWindowTheme() override = default;
 
+    enum class Control {
+        Close,
+        Minimize,
+        Maximize,
+    };
+
+    static bool uses_modern_controls(Palette const&);
+    static IntRect modern_title_text_rect(IntRect titlebar, IntRect controls);
+    static void paint_modern_control(Painter&, IntRect const&, Palette const&, Control, WindowState, bool hovered = false, bool pressed = false, bool modified = false, bool maximized = false);
+
     virtual void paint_normal_frame(Painter& painter, WindowState window_state, WindowMode window_mode, IntRect const& window_rect, StringView window_title, Bitmap const& icon, Palette const& palette, IntRect const& leftmost_button_rect, int menu_row_count, bool window_modified) const override;
     virtual void paint_notification_frame(Painter&, WindowMode, IntRect const& window_rect, Palette const&, IntRect const& close_button_rect) const override;
 

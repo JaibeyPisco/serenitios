@@ -49,7 +49,10 @@ public:
 
     enum class Style {
         Normal,
-        IconOnly
+        IconOnly,
+        ModernClose,
+        ModernMinimize,
+        ModernMaximize,
     };
 
     void set_style(Style style) { m_style = style; }

@@ -138,18 +138,19 @@ void WindowFrame::set_button_icons()
     auto button_style = WindowManager::the().palette().title_buttons_icon_only()
         ? Button::Style::IconOnly
         : Button::Style::Normal;
+    bool modern = m_window.type() == WindowType::Normal && WindowManager::the().palette().window_theme_provider(Gfx::WindowThemeRole::WindowTheme) == Gfx::WindowThemeProvider::Modern;
 
     if (m_window.is_closeable()) {
         m_close_button->set_icon(m_window.is_modified() ? s_close_modified_icon : s_close_icon);
-        m_close_button->set_style(button_style);
+        m_close_button->set_style(modern ? Button::Style::ModernClose : button_style);
     }
     if (m_window.is_minimizable() && !m_window.is_modal()) {
         m_minimize_button->set_icon(s_minimize_icon);
-        m_minimize_button->set_style(button_style);
+        m_minimize_button->set_style(modern ? Button::Style::ModernMinimize : button_style);
     }
     if (m_window.is_resizable()) {
         m_maximize_button->set_icon(m_window.is_maximized() ? s_restore_icon : s_maximize_icon);
-        m_maximize_button->set_style(button_style);
+        m_maximize_button->set_style(modern ? Button::Style::ModernMaximize : button_style);
     }
 }
 
@@ -579,6 +580,12 @@ Gfx::IntRect WindowFrame::constrained_render_rect_to_screen(Gfx::IntRect const& 
 
 Gfx::IntRect WindowFrame::leftmost_titlebar_button_rect() const
 {
+    if (m_window.type() == WindowType::Normal && WindowManager::the().palette().window_theme_provider(Gfx::WindowThemeRole::WindowTheme) == Gfx::WindowThemeProvider::Modern) {
+        Gfx::IntRect controls;
+        for (auto const& button : m_buttons)
+            controls = controls.united(button->relative_rect());
+        return controls;
+    }
     if (!m_buttons.is_empty())
         return m_buttons.last()->relative_rect();
 
@@ -671,6 +678,14 @@ void WindowFrame::window_rect_changed(Gfx::IntRect const& old_rect, Gfx::IntRect
 void WindowFrame::layout_buttons()
 {
     auto button_rects = current_window_theme().layout_buttons(to_theme_window_type(m_window.type()), to_theme_window_mode(m_window.mode()), m_window.rect(), WindowManager::the().palette(), m_buttons.size(), m_window.is_maximized());
+    if (m_window.type() == WindowType::Normal && WindowManager::the().palette().window_theme_provider(Gfx::WindowThemeRole::WindowTheme) == Gfx::WindowThemeProvider::Modern) {
+        size_t index = 0;
+        for (auto* button : { m_close_button, m_minimize_button, m_maximize_button }) {
+            if (button)
+                button->set_relative_rect(button_rects[index++]);
+        }
+        return;
+    }
     for (size_t i = 0; i < m_buttons.size(); i++)
         m_buttons[i]->set_relative_rect(button_rects[i]);
 }

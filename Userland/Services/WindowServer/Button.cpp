@@ -5,6 +5,7 @@
  */
 
 #include <LibGfx/CharacterBitmap.h>
+#include <LibGfx/ClassicWindowTheme.h>
 #include <LibGfx/Painter.h>
 #include <LibGfx/StylePainter.h>
 #include <WindowServer/Button.h>
@@ -28,6 +29,13 @@ void Button::paint(Screen& screen, Gfx::Painter& painter)
     auto palette = WindowManager::the().palette();
     Gfx::PainterStateSaver saver(painter);
     painter.translate(relative_rect().location());
+
+    if (m_style == Style::ModernClose || m_style == Style::ModernMinimize || m_style == Style::ModernMaximize) {
+        auto control = m_style == Style::ModernClose ? Gfx::ClassicWindowTheme::Control::Close : m_style == Style::ModernMinimize ? Gfx::ClassicWindowTheme::Control::Minimize
+                                                                                                                                  : Gfx::ClassicWindowTheme::Control::Maximize;
+        Gfx::ClassicWindowTheme::paint_modern_control(painter, rect(), palette, control, m_frame.window_state_for_theme(), m_hovered, m_pressed, m_frame.window().is_modified(), m_frame.window().is_maximized());
+        return;
+    }
 
     if (m_style == Style::Normal)
         Gfx::StylePainter::paint_button(painter, rect(), palette, Gfx::ButtonStyle::Normal, m_pressed, m_hovered);

@@ -52,7 +52,8 @@ NonnullRefPtr<PaletteImpl> PaletteImpl::clone() const
 Gfx::WindowTheme& Palette::window_theme() const
 {
     switch (m_impl->window_theme_provider(WindowThemeRole::WindowTheme)) {
-    case WindowThemeProvider::Classic: {
+    case WindowThemeProvider::Classic:
+    case WindowThemeProvider::Modern: {
         static ClassicWindowTheme classic_window_theme;
         return classic_window_theme;
     }

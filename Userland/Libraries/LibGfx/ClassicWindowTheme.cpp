@@ -14,6 +14,54 @@
 
 namespace Gfx {
 
+bool ClassicWindowTheme::uses_modern_controls(Palette const& palette)
+{
+    return palette.window_theme_provider(WindowThemeRole::WindowTheme) == WindowThemeProvider::Modern;
+}
+
+IntRect ClassicWindowTheme::modern_title_text_rect(IntRect titlebar, IntRect controls)
+{
+    int left = titlebar.left() + 8;
+    if (!controls.is_empty())
+        left = max(left, controls.right() + 8);
+    return { left, titlebar.top(), max(0, titlebar.right() - 8 - left + 1), titlebar.height() };
+}
+
+void ClassicWindowTheme::paint_modern_control(Painter& painter, IntRect const& rect, Palette const& palette, Control control, WindowState state, bool hovered, bool pressed, bool modified, bool maximized)
+{
+    PainterStateSaver saver(painter);
+    painter.add_clip_rect(rect);
+    int diameter = min(14, min(rect.width() - 4, rect.height() - 4));
+    if (diameter < 8)
+        return;
+    auto circle = IntRect { 0, 0, diameter, diameter }.centered_within(rect);
+    Color fill = control == Control::Close ? Color(240, 86, 80) : control == Control::Minimize ? Color(242, 189, 65)
+                                                                                               : Color(52, 195, 90);
+    if (state == WindowState::Inactive)
+        fill = fill.mixed_with(palette.inactive_window_border1(), .45f);
+    if (pressed)
+        fill = fill.darkened(.75f);
+    else if (hovered)
+        fill = fill.lightened(1.12f);
+    painter.fill_ellipse(circle, fill);
+    auto center = circle.center();
+    auto ink = Color(40, 35, 30);
+    if (modified && control == Control::Close) {
+        painter.fill_ellipse({ center.x() - 2, center.y() - 2, 4, 4 }, ink);
+    } else if (hovered || pressed) {
+        if (control == Control::Close) {
+            painter.draw_line(center.translated(-3, -3), center.translated(3, 3), ink);
+            painter.draw_line(center.translated(-3, 3), center.translated(3, -3), ink);
+        } else if (control == Control::Minimize) {
+            painter.draw_line(center.translated(-3, 0), center.translated(3, 0), ink);
+        } else {
+            painter.draw_rect({ center.x() - 3, center.y() - 3, 7, 7 }, ink);
+            if (maximized)
+                painter.draw_line(center.translated(-1, -1), center.translated(3, -1), ink);
+        }
+    }
+}
+
 int ClassicWindowTheme::menubar_height() const
 {
     return max(20, FontDatabase::default_font().pixel_size_rounded_up() + 6);
@@ -21,6 +69,8 @@ int ClassicWindowTheme::menubar_height() const
 
 Gfx::IntRect ClassicWindowTheme::titlebar_icon_rect(WindowType window_type, WindowMode window_mode, IntRect const& window_rect, Palette const& palette) const
 {
+    if (window_type == WindowType::Normal && uses_modern_controls(palette))
+        return {};
     if (window_mode == WindowMode::RenderAbove)
         return {};
 
@@ -38,6 +88,8 @@ Gfx::IntRect ClassicWindowTheme::titlebar_icon_rect(WindowType window_type, Wind
 
 Gfx::IntRect ClassicWindowTheme::titlebar_text_rect(WindowType window_type, WindowMode window_mode, IntRect const& window_rect, Palette const& palette) const
 {
+    if (window_type == WindowType::Normal && uses_modern_controls(palette))
+        return modern_title_text_rect(titlebar_rect(window_type, window_mode, window_rect, palette), {});
     auto titlebar_rect = this->titlebar_rect(window_type, window_mode, window_rect, palette);
     auto titlebar_icon_rect = this->titlebar_icon_rect(window_type, window_mode, window_rect, palette);
     return {
@@ -63,6 +115,15 @@ void ClassicWindowTheme::paint_normal_frame(Painter& painter, WindowState window
     titlebar_title_rect.set_width(title_font.width(window_title));
 
     auto [title_color, border_color, border_color2, stripes_color, shadow_color] = compute_frame_colors(window_state, palette);
+
+    if (uses_modern_controls(palette)) {
+        int radius = max(0, palette.window_border_radius() - palette.window_border_thickness());
+        painter.fill_rect_with_rounded_corners(titlebar_rect, border_color, radius, radius, 0, 0);
+        auto text_rect = modern_title_text_rect(titlebar_rect, leftmost_button_rect);
+        if (!text_rect.is_empty())
+            painter.draw_text(text_rect, window_title, title_font, TextAlignment::CenterLeft, title_color, Gfx::TextElision::Right);
+        return;
+    }
 
     painter.draw_line(titlebar_rect.bottom_left(), titlebar_rect.bottom_right().moved_left(1), palette.button());
     painter.draw_line(titlebar_rect.bottom_left().moved_down(1), titlebar_rect.bottom_right().translated(-1, 1), palette.button());
@@ -205,6 +266,17 @@ Vector<IntRect> ClassicWindowTheme::layout_buttons(WindowType window_type, Windo
     int window_button_height = palette.window_title_button_height();
     int pos;
     Vector<IntRect> button_rects;
+    if (window_type == WindowType::Normal && uses_modern_controls(palette)) {
+        auto titlebar = titlebar_rect(window_type, window_mode, window_rect, palette);
+        int left = titlebar.left() + 8;
+        for (size_t i = 0; i < buttons; ++i) {
+            IntRect rect { left, 0, window_button_width, window_button_height };
+            rect.center_vertically_within(titlebar);
+            button_rects.append(rect);
+            left += window_button_width;
+        }
+        return button_rects;
+    }
     if (window_type == WindowType::Notification)
         pos = titlebar_rect(window_type, window_mode, window_rect, palette).top() + 2;
     else

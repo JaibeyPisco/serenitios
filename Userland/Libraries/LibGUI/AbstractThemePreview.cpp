@@ -14,6 +14,7 @@
 #include <LibGUI/AbstractThemePreview.h>
 #include <LibGUI/Painter.h>
 #include <LibGfx/Bitmap.h>
+#include <LibGfx/ClassicWindowTheme.h>
 
 namespace GUI {
 
@@ -113,6 +114,10 @@ void AbstractThemePreview::paint_window(StringView title, Gfx::IntRect const& re
         Button { {}, m_minimize_bitmap.is_null() ? m_default_minimize_bitmap : m_minimize_bitmap }
     };
 
+    bool modern = Gfx::ClassicWindowTheme::uses_modern_controls(m_preview_palette);
+    if (modern)
+        swap(possible_buttons[1], possible_buttons[2]);
+
     auto buttons = possible_buttons.span().trim(button_count);
 
     int button_idx = 0;
@@ -139,7 +144,15 @@ void AbstractThemePreview::paint_window(StringView title, Gfx::IntRect const& re
     painter.fill_rect(rect.translated(-frame_rect.location()), m_preview_palette.color(Gfx::ColorRole::Background));
 
     auto inactive_button_opacity = m_preview_palette.window_title_button_inactive_alpha() / 255.0f;
+    size_t index = 0;
     for (auto& button : buttons) {
+        if (modern) {
+            auto control = index == 0 ? Gfx::ClassicWindowTheme::Control::Close : index == 1 ? Gfx::ClassicWindowTheme::Control::Minimize
+                                                                                             : Gfx::ClassicWindowTheme::Control::Maximize;
+            Gfx::ClassicWindowTheme::paint_modern_control(painter, button.rect, m_preview_palette, control, state);
+            ++index;
+            continue;
+        }
         if (!m_preview_palette.title_buttons_icon_only())
             Gfx::StylePainter::paint_button(painter, button.rect, m_preview_palette, Gfx::ButtonStyle::Normal, false);
         auto bitmap_rect = button.bitmap->rect().centered_within(button.rect);

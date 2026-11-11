@@ -63,7 +63,7 @@ def main():
     for name, value in candidate["Metrics"].items():
         assert value == default["Metrics"].get(name, metric_defaults.get(name)), name
     assert candidate["Alignments"] == default["Alignments"]
-    assert candidate["Window"]["WindowTheme"] == "Classic"
+    assert candidate["Window"]["WindowTheme"] == "Modern"
     assert candidate["Flags"]["IsDark"] == ("true" if args.theme == "Modern Dark" else "false")
     assert candidate["Flags"]["TitleButtonsIconOnly"] == default["Flags"]["TitleButtonsIconOnly"]
     scheme = read(REPO / "Base" / candidate["Paths"]["ColorScheme"].lstrip("/"))

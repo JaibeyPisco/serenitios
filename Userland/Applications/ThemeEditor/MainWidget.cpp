@@ -227,6 +227,7 @@ ErrorOr<NonnullRefPtr<MainWidget>> MainWidget::try_create()
 
     auto window_theme_model = TRY(WindowThemeModel::try_create({
         { "Classic", Gfx::WindowThemeProvider::Classic },
+        { "Modern", Gfx::WindowThemeProvider::Modern },
         { "Redmond Plastic", Gfx::WindowThemeProvider::RedmondPlastic },
         { "Redmond Glass", Gfx::WindowThemeProvider::RedmondGlass },
     }));
