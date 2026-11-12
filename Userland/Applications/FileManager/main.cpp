@@ -59,6 +59,30 @@
 
 using namespace FileManager;
 
+// Presentation callbacks stay local to File Manager and keep the actual actions,
+// path editor and directory widgets alive across theme/layout changes.
+class FileManagerWidget final : public GUI::Widget {
+    C_OBJECT(FileManagerWidget)
+public:
+    Function<void()> on_presentation_change;
+    Function<void()> on_viewport_resize;
+
+private:
+    FileManagerWidget() = default;
+    virtual void theme_change_event(GUI::ThemeChangeEvent& event) override
+    {
+        GUI::Widget::theme_change_event(event);
+        if (on_presentation_change)
+            on_presentation_change();
+    }
+    virtual void resize_event(GUI::ResizeEvent& event) override
+    {
+        GUI::Widget::resize_event(event);
+        if (on_viewport_resize)
+            on_viewport_resize();
+    }
+};
+
 static ErrorOr<int> run_in_desktop_mode();
 static ErrorOr<int> run_in_windowed_mode(ByteString const& initial_location, ByteString const& entry_focused_on_init);
 static void do_copy(Vector<ByteString> const& selected_file_paths, FileOperation file_operation);
@@ -553,7 +577,7 @@ ErrorOr<int> run_in_windowed_mode(ByteString const& initial_location, ByteString
     auto window = GUI::Window::construct();
     window->set_title("File Manager");
 
-    auto widget = window->set_main_widget<GUI::Widget>();
+    auto widget = window->set_main_widget<FileManagerWidget>();
     TRY(widget->load_from_gml(file_manager_window_gml));
 
     auto& toolbar_container = *widget->find_descendant_of_type_named<GUI::ToolbarContainer>("toolbar_container");
@@ -562,6 +586,20 @@ ErrorOr<int> run_in_windowed_mode(ByteString const& initial_location, ByteString
     auto& breadcrumb_toolbar = *widget->find_descendant_of_type_named<GUI::Toolbar>("breadcrumb_toolbar");
     breadcrumb_toolbar.layout()->set_margins({ 0, 6 });
     auto& breadcrumbbar = *widget->find_descendant_of_type_named<GUI::PathBreadcrumbbar>("breadcrumbbar");
+
+    auto& modern_navigation = *widget->find_descendant_of_type_named<GUI::Widget>("modern_navigation");
+    auto& navigation_actions = modern_navigation.add<GUI::Toolbar>(Gfx::Orientation::Horizontal, 28);
+    navigation_actions.set_fixed_width(88);
+    navigation_actions.layout()->set_margins({ 0, 2 });
+    auto& path_slot = modern_navigation.add<GUI::Widget>();
+    path_slot.set_layout<GUI::VerticalBoxLayout>();
+    auto& view_actions = modern_navigation.add<GUI::Toolbar>(Gfx::Orientation::Horizontal, 28);
+    view_actions.set_fixed_width(88);
+    view_actions.layout()->set_margins({ 0, 2 });
+    NonnullRefPtr breadcrumb_owner = breadcrumbbar;
+    auto& folder_pane = *widget->find_descendant_of_type_named<GUI::Widget>("folder_pane");
+    auto& folder_heading = *widget->find_descendant_of_type_named<GUI::Label>("folder_heading");
+    folder_heading.set_font(folder_heading.font().bold_variant());
 
     auto& splitter = *widget->find_descendant_of_type_named<GUI::HorizontalSplitter>("splitter");
     auto& tree_view = *widget->find_descendant_of_type_named<GUI::TreeView>("tree_view");
@@ -641,38 +679,32 @@ ErrorOr<int> run_in_windowed_mode(ByteString const& initial_location, ByteString
     RefPtr<GUI::Action> layout_folderpane_action;
 
     auto show_toolbar = Config::read_bool("FileManager"sv, "Layout"sv, "ShowToolbar"sv, true);
+    auto show_location = Config::read_bool("FileManager"sv, "Layout"sv, "ShowLocationBar"sv, true);
+    auto uses_modern_layout = [&] {
+        return widget->palette().window_theme_provider(Gfx::WindowThemeRole::WindowTheme) == Gfx::WindowThemeProvider::Modern;
+    };
+    auto update_navigation = [&] {
+        bool modern = uses_modern_layout();
+        main_toolbar.set_visible(!modern && show_toolbar);
+        breadcrumb_toolbar.set_visible(!modern && show_location);
+        toolbar_container.set_visible(!modern && (show_toolbar || show_location));
+        modern_navigation.set_visible(modern && (show_toolbar || show_location));
+        navigation_actions.set_visible(show_toolbar);
+        view_actions.set_visible(show_toolbar);
+        path_slot.set_visible(show_location);
+    };
     layout_toolbar_action = GUI::Action::create_checkable("&Toolbar", [&](auto& action) {
-        if (action.is_checked()) {
-            main_toolbar.set_visible(true);
-            toolbar_container.set_visible(true);
-        } else {
-            main_toolbar.set_visible(false);
-            if (!breadcrumb_toolbar.is_visible())
-                toolbar_container.set_visible(false);
-        }
         show_toolbar = action.is_checked();
-        Config::write_bool("FileManager"sv, "Layout"sv, "ShowToolbar"sv, action.is_checked());
+        update_navigation();
+        Config::write_bool("FileManager"sv, "Layout"sv, "ShowToolbar"sv, show_toolbar);
     });
     layout_toolbar_action->set_checked(show_toolbar);
-    main_toolbar.set_visible(show_toolbar);
-
-    auto show_location = Config::read_bool("FileManager"sv, "Layout"sv, "ShowLocationBar"sv, true);
     layout_location_action = GUI::Action::create_checkable("&Location Bar", [&](auto& action) {
-        if (action.is_checked()) {
-            breadcrumb_toolbar.set_visible(true);
-            toolbar_container.set_visible(true);
-        } else {
-            breadcrumb_toolbar.set_visible(false);
-            if (!main_toolbar.is_visible())
-                toolbar_container.set_visible(false);
-        }
         show_location = action.is_checked();
-        Config::write_bool("FileManager"sv, "Layout"sv, "ShowLocationBar"sv, action.is_checked());
+        update_navigation();
+        Config::write_bool("FileManager"sv, "Layout"sv, "ShowLocationBar"sv, show_location);
     });
     layout_location_action->set_checked(show_location);
-    breadcrumb_toolbar.set_visible(show_location);
-
-    toolbar_container.set_visible(show_location || show_toolbar);
 
     layout_statusbar_action = GUI::Action::create_checkable("&Status Bar", [&](auto& action) {
         action.is_checked() ? statusbar.set_visible(true) : statusbar.set_visible(false);
@@ -684,20 +716,17 @@ ErrorOr<int> run_in_windowed_mode(ByteString const& initial_location, ByteString
     statusbar.set_visible(show_statusbar);
 
     layout_folderpane_action = GUI::Action::create_checkable("&Folder Pane", { Mod_Ctrl, Key_P }, [&](auto& action) {
-        action.is_checked() ? tree_view.set_visible(true) : tree_view.set_visible(false);
+        folder_pane.set_visible(action.is_checked());
+        if (widget->on_viewport_resize)
+            widget->on_viewport_resize();
         Config::write_bool("FileManager"sv, "Layout"sv, "ShowFolderPane"sv, action.is_checked());
     });
 
     auto show_folderpane = Config::read_bool("FileManager"sv, "Layout"sv, "ShowFolderPane"sv, true);
     layout_folderpane_action->set_checked(show_folderpane);
-    tree_view.set_visible(show_folderpane);
+    folder_pane.set_visible(show_folderpane);
 
-    breadcrumbbar.on_hide_location_box = [&] {
-        if (show_location)
-            breadcrumb_toolbar.set_visible(true);
-        if (!(show_location || show_toolbar))
-            toolbar_container.set_visible(false);
-    };
+    breadcrumbbar.on_hide_location_box = [&] { update_navigation(); };
 
     auto view_type_action_group = make<GUI::ActionGroup>();
     view_type_action_group->set_exclusive(true);
@@ -995,8 +1024,13 @@ ErrorOr<int> run_in_windowed_mode(ByteString const& initial_location, ByteString
     }));
 
     auto go_to_location_action = GUI::Action::create("Go to &Location...", { Mod_Ctrl, Key_L }, Key_F6, TRY(Gfx::Bitmap::load_from_uri("resource://icons/16x16/go-to.png"sv)), [&](auto&) {
-        toolbar_container.set_visible(true);
-        breadcrumb_toolbar.set_visible(true);
+        if (uses_modern_layout()) {
+            modern_navigation.set_visible(true);
+            path_slot.set_visible(true);
+        } else {
+            toolbar_container.set_visible(true);
+            breadcrumb_toolbar.set_visible(true);
+        }
         breadcrumbbar.show_location_text_box();
     });
 
@@ -1039,6 +1073,54 @@ ErrorOr<int> run_in_windowed_mode(ByteString const& initial_location, ByteString
     main_toolbar.add_action(directory_view->view_as_icons_action());
     main_toolbar.add_action(directory_view->view_as_table_action());
     main_toolbar.add_action(directory_view->view_as_columns_action());
+
+    navigation_actions.add_action(go_back_action);
+    navigation_actions.add_action(go_forward_action);
+    navigation_actions.add_action(open_parent_directory_action);
+    view_actions.add_action(directory_view->view_as_icons_action());
+    view_actions.add_action(directory_view->view_as_table_action());
+    view_actions.add_action(directory_view->view_as_columns_action());
+
+    Optional<bool> previous_modern;
+    int classic_sidebar_width = 175;
+    int modern_sidebar_width = 192;
+    auto fit_sidebar = [&] {
+        if (uses_modern_layout() && widget->width() > 0 && widget->width() < 520 && (folder_pane.width() == 0 || folder_pane.width() > max(96, widget->width() / 3)))
+            folder_pane.set_preferred_width(max(96, widget->width() / 3));
+    };
+    widget->on_presentation_change = [&] {
+        bool modern = uses_modern_layout();
+        if (!previous_modern.has_value() || previous_modern != modern) {
+            if (previous_modern.has_value() && folder_pane.width() > 0) {
+                if (*previous_modern)
+                    modern_sidebar_width = folder_pane.width();
+                else
+                    classic_sidebar_width = folder_pane.width();
+            }
+            auto* parent = breadcrumbbar.parent();
+            if (parent)
+                parent->remove_child(breadcrumbbar);
+            if (modern)
+                path_slot.add_child(breadcrumb_owner);
+            else
+                breadcrumb_toolbar.add_child(breadcrumb_owner);
+            folder_pane.set_preferred_width(modern ? modern_sidebar_width : classic_sidebar_width);
+            previous_modern = modern;
+        }
+        widget->layout()->set_spacing(modern ? 0 : 2);
+        folder_heading.set_visible(modern);
+        folder_pane.layout()->set_margins(modern ? GUI::Margins { 4, 8, 4, 8 } : GUI::Margins {});
+        folder_pane.set_fill_with_background_color(modern);
+        folder_pane.set_min_width(modern ? 96 : 0);
+        tree_view.set_frame_style(modern ? Gfx::FrameStyle::NoFrame : Gfx::FrameStyle::SunkenContainer);
+        tree_view.set_background_role(modern ? Gfx::ColorRole::Window : Gfx::ColorRole::Base);
+        tree_view.set_should_fill_selected_rows(modern);
+        statusbar.set_fixed_height(modern ? 22 : 18);
+        update_navigation();
+        fit_sidebar();
+    };
+    widget->on_viewport_resize = [&] { fit_sidebar(); };
+    widget->on_presentation_change();
 
     breadcrumbbar.on_path_change = [&](auto selected_path) {
         if (FileSystem::is_directory(selected_path)) {

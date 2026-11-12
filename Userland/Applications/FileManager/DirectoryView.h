@@ -136,6 +136,8 @@ public:
 
 private:
     explicit DirectoryView(Mode);
+    virtual void theme_change_event(GUI::ThemeChangeEvent&) override;
+    void update_presentation();
 
     GUI::FileSystemModel const& model() const { return *m_model; }
     GUI::FileSystemModel& model() { return *m_model; }

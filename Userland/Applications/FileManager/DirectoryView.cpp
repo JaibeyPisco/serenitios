@@ -22,6 +22,7 @@
 #include <LibGUI/ModelEditingDelegate.h>
 #include <LibGUI/Process.h>
 #include <LibGUI/SortingProxyModel.h>
+#include <LibGfx/Palette.h>
 #include <serenity.h>
 #include <spawn.h>
 #include <stdio.h>
@@ -143,6 +144,25 @@ DirectoryView::DirectoryView(Mode mode)
     }
 
     set_view_mode(ViewMode::Icon);
+    update_presentation();
+}
+
+void DirectoryView::update_presentation()
+{
+    bool modern = palette().window_theme_provider(Gfx::WindowThemeRole::WindowTheme) == Gfx::WindowThemeProvider::Modern;
+    m_icon_view->set_modern_presentation(modern);
+    if (is_desktop())
+        return;
+    m_icon_view->set_frame_style(modern ? Gfx::FrameStyle::NoFrame : Gfx::FrameStyle::SunkenContainer);
+    m_table_view->set_frame_style(modern ? Gfx::FrameStyle::NoFrame : Gfx::FrameStyle::SunkenContainer);
+    m_columns_view->set_frame_style(modern ? Gfx::FrameStyle::NoFrame : Gfx::FrameStyle::SunkenContainer);
+    m_table_view->set_vertical_padding(modern ? 12 : 8);
+}
+
+void DirectoryView::theme_change_event(GUI::ThemeChangeEvent& event)
+{
+    GUI::StackWidget::theme_change_event(event);
+    update_presentation();
 }
 
 GUI::FileSystemModel::Node const& DirectoryView::node(GUI::ModelIndex const& index) const

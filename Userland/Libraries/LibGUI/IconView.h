@@ -36,6 +36,10 @@ public:
     bool always_wrap_item_labels() const { return m_always_wrap_item_labels; }
     void set_always_wrap_item_labels(bool value) { m_always_wrap_item_labels = value; }
 
+    // Opt-in file/desktop presentation; no global IconView density change.
+    void set_modern_presentation(bool);
+    bool modern_presentation() const { return m_modern_presentation; }
+
     int model_column() const { return m_model_column; }
     void set_model_column(int column) { m_model_column = column; }
 
@@ -176,6 +180,7 @@ private:
     bool m_changing_selection { false };
 
     bool m_had_valid_size { false };
+    bool m_modern_presentation { false };
 };
 
 }

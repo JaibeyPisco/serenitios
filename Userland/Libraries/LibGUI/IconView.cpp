@@ -27,6 +27,18 @@ IconView::IconView()
     horizontal_scrollbar().set_visible(false);
 }
 
+void IconView::set_modern_presentation(bool enabled)
+{
+    if (m_modern_presentation == enabled)
+        return;
+    m_modern_presentation = enabled;
+    // Never reflow desktop cells when changing theme.
+    m_effective_item_size = enabled && m_flow_direction == FlowDirection::LeftToRight ? Gfx::IntSize { 84, 80 } : Gfx::IntSize { 80, 80 };
+    m_item_data_cache_valid = false;
+    update_content_size();
+    update();
+}
+
 void IconView::select_all()
 {
     for (int item_index = 0; item_index < item_count(); ++item_index) {
@@ -206,7 +218,7 @@ ModelIndex IconView::index_at_event_position(Gfx::IntPoint position) const
     VERIFY(model());
     auto adjusted_position = to_content_position(position);
     if (auto item_data = item_data_from_content_position(adjusted_position)) {
-        if (item_data->is_containing(adjusted_position))
+        if (m_modern_presentation ? item_rect(item_data->index.row()).shrunken(4, 4).contains(adjusted_position) : item_data->is_containing(adjusted_position))
             return item_data->index;
     }
     return {};
@@ -400,7 +412,7 @@ IconView::paint_invalidation_rect(ModelIndex const& index) const
     if (!index.is_valid())
         return {};
     auto& item_data = get_item_data(index.row());
-    return item_data.rect(true);
+    return m_modern_presentation ? item_rect(index.row()) : item_data.rect(true);
 }
 
 void IconView::did_change_hovered_index(ModelIndex const& old_index, ModelIndex const& new_index)
@@ -415,7 +427,9 @@ void IconView::did_change_hovered_index(ModelIndex const& old_index, ModelIndex 
 void IconView::did_change_cursor_index(ModelIndex const& old_index, ModelIndex const& new_index)
 {
     AbstractView::did_change_cursor_index(old_index, new_index);
-    if (old_index.is_valid())
+    // Sorting a shrinking model can move the cursor while its old row is gone.
+    // Do not query data for that stale row before the view receives its update.
+    if (old_index.is_valid() && model()->is_within_range(old_index))
         get_item_rects(old_index.row(), get_item_data(old_index.row()), font_for_index(old_index));
     if (new_index.is_valid())
         get_item_rects(new_index.row(), get_item_data(new_index.row()), font_for_index(new_index));
@@ -434,7 +448,7 @@ void IconView::get_item_rects(int item_index, ItemData& item_data, Gfx::Font con
     item_data.text_rect = { 0, item_data.icon_rect.bottom() + 6, 0, font.pixel_size_rounded_up() };
     item_data.wrapped_text_lines.clear();
 
-    if ((unwrapped_text_width > available_width) && (item_data.selected || m_hovered_index == item_data.index || cursor_index() == item_data.index || m_always_wrap_item_labels)) {
+    if ((unwrapped_text_width > available_width) && (item_data.selected || m_hovered_index == item_data.index || cursor_index() == item_data.index || m_always_wrap_item_labels || m_modern_presentation)) {
         int current_line_width = 0;
         int current_line_start = 0;
         int widest_line_width = 0;
@@ -505,7 +519,7 @@ void IconView::paint_event(PaintEvent& event)
     painter.translate(frame_thickness(), frame_thickness());
     painter.translate(-horizontal_scrollbar().value(), -vertical_scrollbar().value());
 
-    auto selection_color = is_focused() ? palette().selection() : palette().inactive_selection();
+    auto selection_color = is_focused() || (m_modern_presentation && !fill_with_background_color()) ? palette().selection() : palette().inactive_selection();
 
     for_each_item_intersecting_rect(to_content_rect(event.rect()), [&](auto& item_data) -> IterationDecision {
         Color background_color;
@@ -516,6 +530,14 @@ void IconView::paint_event(PaintEvent& event)
                 background_color = widget_background_color;
         }
 
+        auto tile = item_rect(item_data.index.row()).shrunken(4, 4);
+        if (m_modern_presentation) {
+            if (item_data.selected)
+                painter.fill_rect_with_rounded_corners(tile, selection_color, 6);
+            else if (fill_with_background_color() && item_data.index == m_hovered_index)
+                painter.fill_rect_with_rounded_corners(tile, palette().hover_highlight(), 6);
+        }
+
         auto icon = item_data.index.data(ModelRole::Icon);
 
         if (icon.is_icon()) {
@@ -523,7 +545,7 @@ void IconView::paint_event(PaintEvent& event)
                 Gfx::IntRect destination = bitmap->rect();
                 destination.center_within(item_data.icon_rect);
 
-                if (item_data.selected) {
+                if (item_data.selected && !m_modern_presentation) {
                     auto tint = selection_color.with_alpha(100);
                     painter.blit_filtered(destination.location(), *bitmap, bitmap->rect(), [&](auto src) { return src.blend(tint); });
                 } else if (m_hovered_index.is_valid() && m_hovered_index == item_data.index) {
@@ -539,12 +561,16 @@ void IconView::paint_event(PaintEvent& event)
 
         auto const& text_rect = item_data.text_rect;
 
-        if (m_edit_index != item_data.index)
+        if (!m_modern_presentation && m_edit_index != item_data.index)
             painter.fill_rect(text_rect, background_color);
 
         if (is_focused() && item_data.index == cursor_index()) {
-            painter.draw_rect(text_rect, widget_background_color);
-            painter.draw_focus_rect(text_rect, palette().focus_outline());
+            if (m_modern_presentation) {
+                painter.draw_rect(tile.shrunken(2, 2), item_data.selected ? palette().selection_text() : palette().focus_outline());
+            } else {
+                painter.draw_rect(text_rect, widget_background_color);
+                painter.draw_focus_rect(text_rect, palette().focus_outline());
+            }
         }
 
         if (!item_data.wrapped_text_lines.is_empty()) {
@@ -807,7 +833,7 @@ inline IterationDecision IconView::for_each_item_intersecting_rect(Gfx::IntRect 
     while (item_index < last_index) {
         for (int i = item_index; i < min(item_index + items_per_flow_axis_step, last_index); i++) {
             auto& item_data = get_item_data(i);
-            if (item_data.is_intersecting(rect)) {
+            if (m_modern_presentation ? item_rect(i).intersects(rect) : item_data.is_intersecting(rect)) {
                 auto decision = f(item_data);
                 if (decision != IterationDecision::Continue)
                     return decision;
