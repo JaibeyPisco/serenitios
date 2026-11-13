@@ -26,6 +26,7 @@ public:
     virtual ~ClockWidget() override = default;
 
     void update_format(ByteString const&);
+    void set_show_date(bool);
 
 private:
     ClockWidget();
@@ -48,7 +49,9 @@ private:
 
     void update_selected_calendar_button();
 
+    ByteString m_configured_format;
     ByteString m_time_format;
+    bool m_show_date { true };
     RefPtr<GUI::Window> m_calendar_window;
     RefPtr<GUI::Calendar> m_calendar;
     RefPtr<GUI::Button> m_next_date;

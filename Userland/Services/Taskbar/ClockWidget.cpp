@@ -124,9 +124,18 @@ ClockWidget::ClockWidget()
 
 void ClockWidget::update_format(ByteString const& format)
 {
-    m_time_format = format;
-    m_time_width = font().width(Core::DateTime::create(122, 2, 22, 22, 22, 22).to_byte_string(format));
-    set_fixed_size(m_time_width + 20, 21);
+    m_configured_format = format;
+    m_time_format = m_show_date ? ByteString::formatted("%a %e %b   {}", format) : format;
+    m_time_width = font().width(Core::DateTime::create(122, 2, 22, 22, 22, 22).to_byte_string(m_time_format));
+    set_fixed_size(m_time_width + 20, 26);
+}
+
+void ClockWidget::set_show_date(bool show_date)
+{
+    if (m_show_date == show_date)
+        return;
+    m_show_date = show_date;
+    update_format(m_configured_format);
 }
 
 void ClockWidget::paint_event(GUI::PaintEvent& event)
@@ -193,7 +202,7 @@ void ClockWidget::position_calendar_window()
     constexpr auto taskbar_top_padding { 4 };
     m_calendar_window->set_rect(
         screen_relative_rect().right() - m_calendar_window->width(),
-        screen_relative_rect().top() - taskbar_top_padding - m_calendar_window->height(),
+        screen_relative_rect().bottom() + taskbar_top_padding + 1,
         m_window_size.width(),
         m_window_size.height());
 }

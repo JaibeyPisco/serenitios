@@ -33,7 +33,7 @@ static void update_notification_window_locations(Gfx::IntRect const& screen_rect
         if (last_window_rect.has_value())
             new_window_location = last_window_rect.value().bottom_left().moved_down(9);
         else
-            new_window_location = screen_rect.top_right().translated(-window->rect().width() - 24 - 1, 7);
+            new_window_location = screen_rect.top_right().translated(-window->rect().width() - 24 - 1, Gfx::DesktopGeometry::top_panel_height + 7);
         if (window->rect().location() != new_window_location) {
             window->move_to(new_window_location);
         }
@@ -62,7 +62,7 @@ NotificationWindow::NotificationWindow(i32 client_id, String const& text, String
     Gfx::IntRect rect;
     rect.set_width(220);
     rect.set_height(40);
-    rect.set_location(GUI::Desktop::the().rect().top_right().translated(-rect.width() - 24 - 1, 7));
+    rect.set_location(GUI::Desktop::the().rect().top_right().translated(-rect.width() - 24 - 1, Gfx::DesktopGeometry::top_panel_height + 7));
 
     if (lowest_notification_rect_on_screen.has_value())
         rect.set_location(lowest_notification_rect_on_screen.value().bottom_left().moved_down(9));

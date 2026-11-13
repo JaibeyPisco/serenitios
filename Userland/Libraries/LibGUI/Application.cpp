@@ -7,6 +7,7 @@
 #include <AK/NeverDestroyed.h>
 #include <LibConfig/Client.h>
 #include <LibCore/EventLoop.h>
+#include <LibCore/MimeData.h>
 #include <LibGUI/Action.h>
 #include <LibGUI/Application.h>
 #include <LibGUI/Clipboard.h>

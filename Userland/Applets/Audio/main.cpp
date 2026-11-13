@@ -14,6 +14,7 @@
 #include <LibGUI/Application.h>
 #include <LibGUI/BoxLayout.h>
 #include <LibGUI/CheckBox.h>
+#include <LibGUI/Desktop.h>
 #include <LibGUI/Frame.h>
 #include <LibGUI/Painter.h>
 #include <LibGUI/Slider.h>
@@ -210,9 +211,10 @@ private:
         constexpr auto tray_and_taskbar_padding { 6 };
         constexpr auto icon_offset { (width - 16) / 2 };
         auto applet_rect = window()->applet_rect_on_screen();
+        auto screen = GUI::Desktop::the().rects()[GUI::Desktop::the().main_screen_index()];
         m_slider_window->set_rect(
-            applet_rect.x() - icon_offset,
-            applet_rect.y() - height - tray_and_taskbar_padding,
+            clamp(applet_rect.x() - icon_offset, screen.left() + 2, screen.right() - width - 1),
+            applet_rect.bottom() + tray_and_taskbar_padding + 1,
             width,
             height);
     }

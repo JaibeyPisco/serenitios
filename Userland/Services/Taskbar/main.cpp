@@ -73,6 +73,7 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
         | WindowServer::WMEventMask::WindowRemovals
         | WindowServer::WMEventMask::WindowIconChanges
         | WindowServer::WMEventMask::WorkspaceChanges);
+    window->show_top_panel();
 
     return app->exec();
 }

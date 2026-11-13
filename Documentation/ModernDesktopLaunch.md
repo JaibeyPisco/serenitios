@@ -19,6 +19,16 @@ application panel; System retains themes and power actions. See
 [V6 validation, screenshots and limitations](ModernAppLauncherValidation.md),
 including the reproduced preexisting Shell failure through Run.
 
+## V7.1 top-panel update (2026-11-13)
+
+The active profile selects `modern-v71.ext2` / `desktop-v71.qcow2`. It includes
+V6's latest cold guest state after the user saved and shut down, plus the upper
+32-pixel panel. The lower Taskbar remains; there is one clock/applet area, above.
+V6's base/overlay are preserved for recovery. See
+[V7.1 validation and limitations](ModernTopPanelValidation.md).
+The user's 1920 x 1080 preference is preserved; reference tests also exercised
+1024 x 768 and 640 x 480. No dock or global application menu was added.
+
 ## Start the updated desktop
 
 From Ubuntu/WSL in this repository:
@@ -41,17 +51,17 @@ existing runner's handling of absolute mouse input.
 Use Display Settings -> Appearance -> Theme to select Modern Light, Modern
 Dark or Default. The guest command `DisplaySettings -t themes` opens that page.
 Modern includes the existing circular title controls, V3 controls and V4 File
-Manager navigation/selection; V5 adds categorized Settings and V6 adds the application launcher. A dock and V7 have not been added.
+Manager navigation/selection; V5 adds categorized Settings and V6 adds the application launcher. V7.1 adds the top panel; a dock has not been added.
 
 Normal guest changes are stored in the overlay selected by the profile
-(currently `Build/desktop-modern/desktop-v6.qcow2`).
+(currently `Build/desktop-modern/desktop-v71.qcow2`).
 `./run-modern.sh --test` creates a disposable copy-on-write session; its guest
 changes are discarded when QEMU exits. `--headless` supports QMP validation.
 Temporary session directories are removed on normal launcher exit, and only
 one latest serial log/command per mode is retained. The launcher prevents a
 second simultaneous launch and validates the overlay's backing path.
 
-The selected backing content is `Build/desktop-modern/modern-v6.ext2` and the
+The selected backing content is `Build/desktop-modern/modern-v71.ext2` and the
 pinned, unchanged kernel is `Build/desktop-modern/Kernel`. Keep the base and
 its writable overlay together: do not replace a base under an existing writable
 overlay. A future userland update should use a new base/overlay pair.

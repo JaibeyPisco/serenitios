@@ -367,7 +367,7 @@ ErrorOr<int> run_in_desktop_mode()
     window->set_icon(desktop_icon);
 
     auto desktop_widget = window->set_main_widget<FileManager::DesktopWidget>();
-    desktop_widget->set_layout<GUI::VerticalBoxLayout>();
+    desktop_widget->set_layout<GUI::VerticalBoxLayout>(GUI::Margins { Gfx::DesktopGeometry::top_panel_height, 0, Gfx::DesktopGeometry::bottom_panel_height, 0 }, 0);
 
     auto directory_view = TRY(desktop_widget->try_add<DirectoryView>(DirectoryView::Mode::Desktop));
     directory_view->set_name("directory_view");

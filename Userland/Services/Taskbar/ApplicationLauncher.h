@@ -94,9 +94,9 @@ public:
                 break;
             }
         }
-        auto size = Gfx::IntSize { min(640, screen.width() - 16), min(480, screen.height() - 48) };
+        auto size = Gfx::IntSize { min(640, screen.width() - 16), min(480, screen.height() - Gfx::DesktopGeometry::top_panel_height - Gfx::DesktopGeometry::bottom_panel_height - 8) };
         resize(size);
-        move_to(clamp(anchor.x(), screen.left() + 8, screen.right() - size.width() - 7), max(screen.top() + 8, anchor.top() - size.height() - 4));
+        move_to(clamp(anchor.x(), screen.left() + 8, screen.right() - size.width() - 7), clamp(anchor.bottom() + 5, screen.top() + Gfx::DesktopGeometry::top_panel_height + 4, screen.bottom() - Gfx::DesktopGeometry::bottom_panel_height - size.height()));
         m_sidebar->set_fixed_width(size.width() < 540 ? 120 : 156);
         m_view->set_modern_presentation(main_widget()->palette().window_theme_provider(Gfx::WindowThemeRole::WindowTheme) == Gfx::WindowThemeProvider::Modern);
         m_search->set_text({});

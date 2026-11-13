@@ -142,10 +142,23 @@ ErrorOr<void> TaskbarWindow::populate_taskbar()
 
     m_default_icon = TRY(Gfx::Bitmap::load_from_uri("resource://icons/16x16/window.png"sv));
 
-    m_applet_area_container = main_widget->add<TaskbarFrame>();
-    m_applet_area_container->set_frame_style(Gfx::FrameStyle::SunkenPanel);
-
-    m_clock_widget = main_widget->add<Taskbar::ClockWidget>();
+    // Both shell windows remain in this Taskbar process and share the existing
+    // applet area. The bottom bar keeps Quick Launch and real window buttons.
+    m_top_panel = GUI::Window::construct();
+    m_top_panel->set_window_type(GUI::WindowType::Taskbar);
+    m_top_panel->set_title("SerenityOS Top Panel");
+    auto top = m_top_panel->set_main_widget<GUI::Widget>();
+    top->set_fill_with_background_color(true);
+    top->set_background_role(Gfx::ColorRole::Window);
+    top->set_layout<GUI::HorizontalBoxLayout>(GUI::Margins { 2, 8 }, 8);
+    m_start_button = top->add<GUI::Button>("SerenityOS"_string);
+    set_start_button_font(Gfx::FontDatabase::default_font().bold_variant());
+    top->add_spacer();
+    m_applet_area_container = top->add<TaskbarFrame>();
+    m_applet_area_container->set_frame_style(Gfx::FrameStyle::NoFrame);
+    m_applet_area_container->set_fixed_size(0, 26);
+    m_clock_widget = top->add<Taskbar::ClockWidget>();
+    m_clock_widget->set_frame_style(Gfx::FrameStyle::NoFrame);
 
     m_show_desktop_button = main_widget->add<GUI::Button>();
     m_show_desktop_button->set_tooltip("Show Desktop"_string);
@@ -154,6 +167,7 @@ ErrorOr<void> TaskbarWindow::populate_taskbar()
     m_show_desktop_button->set_fixed_size(24, 24);
     m_show_desktop_button->on_click = TaskbarWindow::show_desktop_button_clicked;
 
+    on_screen_rects_change(GUI::Desktop::the().rects(), GUI::Desktop::the().main_screen_index());
     return {};
 }
 
@@ -170,15 +184,23 @@ void TaskbarWindow::add_system_menu(NonnullRefPtr<GUI::Menu> system_menu, Nonnul
     m_system_menu = move(system_menu);
     m_launcher = move(launcher);
 
-    m_start_button = GUI::Button::construct("Serenity"_string);
     set_start_button_font(Gfx::FontDatabase::default_font().bold_variant());
-    m_start_button->set_icon_spacing(0);
+    m_start_button->set_icon_spacing(6);
+    m_start_button->set_button_style(Gfx::ButtonStyle::Coolbar);
     auto app_icon = GUI::Icon::default_icon("ladyball"sv);
     m_start_button->set_icon(app_icon.bitmap_for_size(16));
     m_start_button->on_click = [this](auto) { m_launcher->toggle(m_start_button->screen_relative_rect()); };
 
-    GUI::Widget* main = main_widget();
-    main->insert_child_before(*m_start_button, *m_quick_launch);
+    update_applet_area();
+}
+
+void TaskbarWindow::show_top_panel()
+{
+    // SetManagerWindow and SetAppletAreaPosition share the same ordered IPC
+    // connection. Never position applets before registering our manager window.
+    m_registered_as_window_manager = true;
+    m_top_panel->show();
+    update_applet_area();
 }
 
 void TaskbarWindow::config_string_did_change(StringView domain, StringView group, StringView key, StringView value)
@@ -204,6 +226,12 @@ void TaskbarWindow::on_screen_rects_change(Vector<Gfx::IntRect, 4> const& rects,
     auto const& rect = rects[main_screen_index];
     Gfx::IntRect new_rect { rect.x(), rect.bottom() - taskbar_height(), rect.width(), taskbar_height() };
     set_rect(new_rect);
+    if (m_top_panel) {
+        m_top_panel->set_rect(rect.x(), rect.y(), rect.width(), Gfx::DesktopGeometry::top_panel_height);
+        m_clock_widget->set_show_date(rect.width() >= 800);
+        if (m_launcher)
+            m_launcher->hide();
+    }
     update_applet_area();
 }
 
@@ -211,11 +239,20 @@ void TaskbarWindow::update_applet_area()
 {
     // NOTE: Widget layout is normally lazy, but here we have to force it right away so we can tell
     //       WindowServer where to place the applet area window.
-    if (!main_widget())
+    if (!m_top_panel || !m_applet_area_container)
         return;
-    main_widget()->do_layout();
+    auto* top = m_top_panel->main_widget();
+    // Keep identity and clock accessible with unusually wide user clock formats
+    // or applet sets. Hide the complete applet group rather than clipping it.
+    auto identity_width = m_start_button ? m_start_button->max_width().as_int() : 140;
+    bool fits = m_applet_area_size.width() + m_clock_widget->max_width().as_int() + identity_width + 48 <= m_top_panel->width();
+    m_applet_area_container->set_visible(fits);
+    top->do_layout();
     auto new_rect = Gfx::IntRect({}, m_applet_area_size).centered_within(m_applet_area_container->screen_relative_rect());
-    GUI::ConnectionToWindowManagerServer::the().async_set_applet_area_position(new_rect.location());
+    if (!fits)
+        new_rect.set_location({ m_top_panel->rect().right() + 1, m_top_panel->y() });
+    if (m_registered_as_window_manager && !m_applet_area_size.is_empty())
+        GUI::ConnectionToWindowManagerServer::the().async_set_applet_area_position(new_rect.location());
 }
 
 NonnullRefPtr<GUI::Button> TaskbarWindow::create_button(WindowIdentifier const& identifier)
@@ -376,7 +413,7 @@ void TaskbarWindow::wm_event(GUI::WMEvent& event)
     case GUI::Event::WM_AppletAreaSizeChanged: {
         auto& changed_event = static_cast<GUI::WMAppletAreaSizeChangedEvent&>(event);
         m_applet_area_size = changed_event.size();
-        m_applet_area_container->set_fixed_size(changed_event.size().width() + 8, 21);
+        m_applet_area_container->set_fixed_size(changed_event.size().width() + 8, 26);
         update_applet_area();
         break;
     }
@@ -460,5 +497,5 @@ void TaskbarWindow::workspace_change_event(unsigned current_row, unsigned curren
 void TaskbarWindow::set_start_button_font(Gfx::Font const& font)
 {
     m_start_button->set_font(font);
-    m_start_button->set_fixed_size(font.width(m_start_button->text()) + 30, 21);
+    m_start_button->set_fixed_size(font.width(m_start_button->text()) + 36, 28);
 }

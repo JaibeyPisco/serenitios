@@ -387,7 +387,7 @@ void Window::center_within(Gfx::IntRect const& other)
 
 void Window::constrain_to_desktop()
 {
-    auto desktop_rect = Desktop::the().rect().shrunken(0, 0, Desktop::the().taskbar_height(), 0);
+    auto desktop_rect = Gfx::DesktopGeometry::work_area(Desktop::the().rects()[Desktop::the().main_screen_index()]);
     auto titlebar = Application::the()->palette().window_title_height();
     auto border = Application::the()->palette().window_border_thickness();
     auto constexpr margin = 1;

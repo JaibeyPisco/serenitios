@@ -6,18 +6,21 @@
 
 #pragma once
 
-#include "ClockWidget.h"
 #include "WindowList.h"
 #include <AK/NonnullRefPtr.h>
 #include <LibConfig/Listener.h>
 #include <LibDesktop/AppFile.h>
 #include <LibGUI/Widget.h>
 #include <LibGUI/Window.h>
+#include <LibGfx/DesktopGeometry.h>
 #include <LibGfx/ShareableBitmap.h>
 #include <Services/Taskbar/QuickLaunchWidget.h>
 #include <Services/WindowServer/ScreenLayout.h>
 
 class ApplicationLauncher;
+namespace Taskbar {
+class ClockWidget;
+}
 
 class TaskbarWindow final : public GUI::Window
     , public Config::Listener {
@@ -27,10 +30,11 @@ public:
     static ErrorOr<NonnullRefPtr<TaskbarWindow>> create();
     virtual ~TaskbarWindow() override = default;
 
-    static int taskbar_height() { return 27; }
+    static int taskbar_height() { return Gfx::DesktopGeometry::bottom_panel_height; }
     static int taskbar_icon_size() { return 16; }
 
     virtual void config_string_did_change(StringView, StringView, StringView, StringView) override;
+    void show_top_panel();
     void add_system_menu(NonnullRefPtr<GUI::Menu> system_menu, NonnullRefPtr<ApplicationLauncher> launcher);
 
 private:
@@ -57,6 +61,8 @@ private:
 
     void set_start_button_font(Gfx::Font const&);
 
+    bool m_registered_as_window_manager { false };
+    RefPtr<GUI::Window> m_top_panel;
     RefPtr<GUI::Menu> m_system_menu;
     RefPtr<ApplicationLauncher> m_launcher;
     RefPtr<GUI::Widget> m_task_button_container;

@@ -13,12 +13,13 @@
 #include <AK/Debug.h>
 #include <AK/StdLibExtras.h>
 #include <AK/Vector.h>
+#include <LibCore/MimeData.h>
 #include <LibGfx/Bitmap.h>
 #include <LibGfx/CharacterBitmap.h>
+#include <LibGfx/DesktopGeometry.h>
 #include <LibGfx/Font/Font.h>
 #include <LibGfx/StylePainter.h>
 #include <LibGfx/SystemTheme.h>
-#include <Services/Taskbar/TaskbarWindow.h>
 #include <WindowServer/Animation.h>
 #include <WindowServer/AppletManager.h>
 #include <WindowServer/Button.h>
@@ -878,6 +879,8 @@ bool WindowManager::process_ongoing_window_move(MouseEvent& event)
                     }
                 }
                 auto pos = m_move_window_origin.translated(event.position() - m_move_origin);
+                auto title_offset = m_move_window->rect().top() - m_move_window->frame().rect().top();
+                pos.set_y(max(pos.y(), desktop.top() + title_offset));
                 m_move_window->set_position_without_repaint(pos);
             };
 
@@ -885,14 +888,14 @@ bool WindowManager::process_ongoing_window_move(MouseEvent& event)
             if (allow_tile && event_location_relative_to_screen.x() <= tiling_deadzone) {
                 if (event_location_relative_to_screen.y() <= tiling_deadzone + desktop_relative_to_screen.top())
                     apply_window_tile(WindowTileType::TopLeft);
-                else if (event_location_relative_to_screen.y() >= desktop_relative_to_screen.height() - tiling_deadzone)
+                else if (event_location_relative_to_screen.y() >= desktop_relative_to_screen.bottom() - tiling_deadzone)
                     apply_window_tile(WindowTileType::BottomLeft);
                 else
                     apply_window_tile(WindowTileType::Left);
             } else if (allow_tile && event_location_relative_to_screen.x() >= cursor_screen.width() - tiling_deadzone) {
                 if (event_location_relative_to_screen.y() <= tiling_deadzone + desktop.top())
                     apply_window_tile(WindowTileType::TopRight);
-                else if (event_location_relative_to_screen.y() >= desktop_relative_to_screen.height() - tiling_deadzone)
+                else if (event_location_relative_to_screen.y() >= desktop_relative_to_screen.bottom() - tiling_deadzone)
                     apply_window_tile(WindowTileType::BottomRight);
                 else
                     apply_window_tile(WindowTileType::Right);
@@ -1535,7 +1538,7 @@ Gfx::IntRect WindowManager::desktop_rect(Screen const& screen) const
         return Screen::main().rect(); // TODO: we should support fullscreen windows on any screen
     auto screen_rect = screen.rect();
     if (screen.is_main_screen())
-        screen_rect.set_height(screen.height() - TaskbarWindow::taskbar_height());
+        screen_rect = Gfx::DesktopGeometry::work_area(screen_rect);
     return screen_rect;
 }
 
@@ -1902,7 +1905,6 @@ void WindowManager::set_highlight_window(Window* new_highlight_window)
         for_each_visible_window_from_back_to_front([](Window& window) {
             if (window.type() == WindowType::Taskbar) {
                 window.invalidate();
-                return IterationDecision::Break;
             }
             return IterationDecision::Continue;
         });
@@ -2314,8 +2316,8 @@ Gfx::IntPoint WindowManager::get_recommended_window_position(Gfx::IntPoint desir
         auto available_rect = desktop_rect(screen);
         point = overlap_window->position() + shift;
         point = { point.x() % screen.width(),
-            (point.y() >= available_rect.height())
-                ? palette().window_theme().titlebar_height(Gfx::WindowTheme::WindowType::Normal, Gfx::WindowTheme::WindowMode::Other, palette())
+            (point.y() >= available_rect.bottom())
+                ? available_rect.top() + desired.y()
                 : point.y() };
     } else {
         point = desired;
