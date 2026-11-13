@@ -11,6 +11,14 @@ the original `modern.ext2` / `desktop.qcow2` pair is used. Both V4 files remain
 unchanged. See [V5 validation and rollback](ModernSettingsValidation.md).
 The cleanup measurements below remain the historical 2026-11-12 results.
 
+## V6 launcher update (2026-11-13)
+
+The active profile now selects `modern-v6.ext2` / `desktop-v6.qcow2`.
+V5 and V4 remain preserved. Serenity/Super opens the categorized searchable
+application panel; System retains themes and power actions. See
+[V6 validation, screenshots and limitations](ModernAppLauncherValidation.md),
+including the reproduced preexisting Shell failure through Run.
+
 ## Start the updated desktop
 
 From Ubuntu/WSL in this repository:
@@ -33,17 +41,17 @@ existing runner's handling of absolute mouse input.
 Use Display Settings -> Appearance -> Theme to select Modern Light, Modern
 Dark or Default. The guest command `DisplaySettings -t themes` opens that page.
 Modern includes the existing circular title controls, V3 controls and V4 File
-Manager navigation/selection; V5 adds the categorized Settings launcher. A dock and V6/V7 have not been added.
+Manager navigation/selection; V5 adds categorized Settings and V6 adds the application launcher. A dock and V7 have not been added.
 
 Normal guest changes are stored in the overlay selected by the profile
-(currently `Build/desktop-modern/desktop-v5.qcow2`).
+(currently `Build/desktop-modern/desktop-v6.qcow2`).
 `./run-modern.sh --test` creates a disposable copy-on-write session; its guest
 changes are discarded when QEMU exits. `--headless` supports QMP validation.
 Temporary session directories are removed on normal launcher exit, and only
 one latest serial log/command per mode is retained. The launcher prevents a
 second simultaneous launch and validates the overlay's backing path.
 
-The selected backing content is `Build/desktop-modern/modern-v5.ext2` and the
+The selected backing content is `Build/desktop-modern/modern-v6.ext2` and the
 pinned, unchanged kernel is `Build/desktop-modern/Kernel`. Keep the base and
 its writable overlay together: do not replace a base under an existing writable
 overlay. A future userland update should use a new base/overlay pair.

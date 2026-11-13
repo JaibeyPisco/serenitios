@@ -17,6 +17,8 @@
 #include <Services/Taskbar/QuickLaunchWidget.h>
 #include <Services/WindowServer/ScreenLayout.h>
 
+class ApplicationLauncher;
+
 class TaskbarWindow final : public GUI::Window
     , public Config::Listener {
     C_OBJECT(TaskbarWindow);
@@ -29,7 +31,7 @@ public:
     static int taskbar_icon_size() { return 16; }
 
     virtual void config_string_did_change(StringView, StringView, StringView, StringView) override;
-    void add_system_menu(NonnullRefPtr<GUI::Menu> system_menu);
+    void add_system_menu(NonnullRefPtr<GUI::Menu> system_menu, NonnullRefPtr<ApplicationLauncher> launcher);
 
 private:
     explicit TaskbarWindow();
@@ -56,6 +58,7 @@ private:
     void set_start_button_font(Gfx::Font const&);
 
     RefPtr<GUI::Menu> m_system_menu;
+    RefPtr<ApplicationLauncher> m_launcher;
     RefPtr<GUI::Widget> m_task_button_container;
     RefPtr<Gfx::Bitmap> m_default_icon;
 

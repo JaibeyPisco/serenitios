@@ -5,6 +5,7 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include "ApplicationLauncher.h"
 #include "ShutdownDialog.h"
 #include "TaskbarWindow.h"
 #include <AK/Debug.h>
@@ -34,6 +35,8 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+extern Vector<NonnullRefPtr<Desktop::AppFile>> g_apps;
+static Vector<ByteString> g_launcher_categories;
 static ErrorOr<Vector<ByteString>> discover_apps_and_categories();
 static ErrorOr<NonnullRefPtr<GUI::Menu>> build_system_menu(GUI::Window&);
 
@@ -61,7 +64,7 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
 
     auto menu = TRY(build_system_menu(*window));
     menu->realize_menu_if_needed();
-    window->add_system_menu(menu);
+    window->add_system_menu(menu, ApplicationLauncher::construct(g_apps, g_launcher_categories, *menu));
 
     window->show();
 
@@ -133,6 +136,7 @@ ErrorOr<Vector<ByteString>> discover_apps_and_categories()
 ErrorOr<NonnullRefPtr<GUI::Menu>> build_system_menu(GUI::Window& window)
 {
     Vector<ByteString> const sorted_app_categories = TRY(discover_apps_and_categories());
+    g_launcher_categories = sorted_app_categories;
     auto system_menu = GUI::Menu::construct("\xE2\x9A\xA1"_string); // HIGH VOLTAGE SIGN
 
     system_menu->add_action(GUI::Action::create("&About SerenityOS", TRY(Gfx::Bitmap::load_from_uri("resource://icons/16x16/ladyball.png"sv)), [&](auto&) {

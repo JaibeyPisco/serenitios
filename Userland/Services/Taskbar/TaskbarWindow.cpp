@@ -8,6 +8,7 @@
  */
 
 #include "TaskbarWindow.h"
+#include "ApplicationLauncher.h"
 #include "ClockWidget.h"
 #include "QuickLaunchWidget.h"
 #include "TaskbarButton.h"
@@ -164,16 +165,17 @@ ErrorOr<void> TaskbarWindow::load_assistant()
     return {};
 }
 
-void TaskbarWindow::add_system_menu(NonnullRefPtr<GUI::Menu> system_menu)
+void TaskbarWindow::add_system_menu(NonnullRefPtr<GUI::Menu> system_menu, NonnullRefPtr<ApplicationLauncher> launcher)
 {
     m_system_menu = move(system_menu);
+    m_launcher = move(launcher);
 
     m_start_button = GUI::Button::construct("Serenity"_string);
     set_start_button_font(Gfx::FontDatabase::default_font().bold_variant());
     m_start_button->set_icon_spacing(0);
     auto app_icon = GUI::Icon::default_icon("ladyball"sv);
     m_start_button->set_icon(app_icon.bitmap_for_size(16));
-    m_start_button->set_menu(m_system_menu);
+    m_start_button->on_click = [this](auto) { m_launcher->toggle(m_start_button->screen_relative_rect()); };
 
     GUI::Widget* main = main_widget();
     main->insert_child_before(*m_start_button, *m_quick_launch);
@@ -379,14 +381,10 @@ void TaskbarWindow::wm_event(GUI::WMEvent& event)
         break;
     }
     case GUI::Event::WM_SuperKeyPressed: {
-        if (!m_system_menu)
-            break;
-
-        if (m_system_menu->is_visible()) {
+        if (m_system_menu && m_system_menu->is_visible())
             m_system_menu->dismiss();
-        } else {
-            m_system_menu->popup(m_start_button->screen_relative_rect().top_left());
-        }
+        if (m_launcher)
+            m_launcher->toggle(m_start_button->screen_relative_rect());
         break;
     }
     case GUI::Event::WM_SuperSpaceKeyPressed: {
