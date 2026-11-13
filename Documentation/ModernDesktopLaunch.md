@@ -1,7 +1,15 @@
 # Run the Modern desktop and retained cleanup results
 
 Date: 2026-11-12. Validated userland source: V4 commit `f596ed59f2`.
-No V5 changes, kernel modifications or EXT2 code changes are included.
+The original V4 validation is retained below; the V5 profile update is documented separately. No kernel or EXT2 code changes are included.
+
+## V5 profile update (2026-11-13)
+
+The launcher now reads the optional `Build/desktop-modern/profile.json`.
+The selected V5 pair is `modern-v5.ext2` / `desktop-v5.qcow2`; without a profile,
+the original `modern.ext2` / `desktop.qcow2` pair is used. Both V4 files remain
+unchanged. See [V5 validation and rollback](ModernSettingsValidation.md).
+The cleanup measurements below remain the historical 2026-11-12 results.
 
 ## Start the updated desktop
 
@@ -17,7 +25,7 @@ From Windows PowerShell:
 wsl -d Ubuntu-24.04 --cd /home/pisco/Documents/serenity ./run-modern.sh
 ```
 
-The launcher opens a GTK QEMU window named **SerenityOS Modern V4**, using one
+The launcher opens a GTK QEMU window named **SerenityOS Modern Desktop**, using one
 CPU, 1 GiB RAM, TCG, standard VGA and the prepared Modern Dark desktop. It does
 not rebuild or reinstall the OS. GTK zoom-to-fit is disabled, following the
 existing runner's handling of absolute mouse input.
@@ -25,18 +33,19 @@ existing runner's handling of absolute mouse input.
 Use Display Settings -> Appearance -> Theme to select Modern Light, Modern
 Dark or Default. The guest command `DisplaySettings -t themes` opens that page.
 Modern includes the existing circular title controls, V3 controls and V4 File
-Manager navigation/selection; a dock or V5-V7 redesign has not been added.
+Manager navigation/selection; V5 adds the categorized Settings launcher. A dock and V6/V7 have not been added.
 
-Normal guest changes are stored in `Build/desktop-modern/desktop.qcow2`.
+Normal guest changes are stored in the overlay selected by the profile
+(currently `Build/desktop-modern/desktop-v5.qcow2`).
 `./run-modern.sh --test` creates a disposable copy-on-write session; its guest
 changes are discarded when QEMU exits. `--headless` supports QMP validation.
 Temporary session directories are removed on normal launcher exit, and only
 one latest serial log/command per mode is retained. The launcher prevents a
 second simultaneous launch and validates the overlay's backing path.
 
-The immutable backing content is `Build/desktop-modern/modern.ext2` and the
+The selected backing content is `Build/desktop-modern/modern-v5.ext2` and the
 pinned, unchanged kernel is `Build/desktop-modern/Kernel`. Keep the base and
-`desktop.qcow2` together: do not replace a base under an existing writable
+its writable overlay together: do not replace a base under an existing writable
 overlay. A future userland update should use a new base/overlay pair.
 This profile has no virtual network adapter; networking was not validated.
 
@@ -89,7 +98,7 @@ old direct disk command can still show Classic; use the new launcher above.
   or new crash-safety guarantee is implied.
 
 Screenshots, serial logs and results are in `Build/desktop-modern/evidence/`.
-The final normal GTK window is left running for use. Test sessions were closed
+At the end of that historical update, the normal GTK window was left running. Test sessions were closed
 and their temporary disks removed. Guest reboot persistence was not separately
 certified during this update.
 
