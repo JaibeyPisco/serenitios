@@ -11,6 +11,7 @@
 #include "ApplicationLauncher.h"
 #include "ApplicationIdentity.h"
 #include "ClockWidget.h"
+#include "DockWidget.h"
 #include "QuickLaunchWidget.h"
 #include "TaskbarButton.h"
 #include "TaskbarFrame.h"
@@ -44,6 +45,8 @@ public:
     virtual ~TaskbarWidget() override = default;
 
     static ErrorOr<NonnullRefPtr<TaskbarWidget>> create();
+    bool modern { false };
+    Function<void()> on_layout;
 
 protected:
     virtual void context_menu_event(GUI::ContextMenuEvent& event) override
@@ -64,11 +67,22 @@ private:
     {
         GUI::Painter painter(*this);
         painter.add_clip_rect(event.rect());
-        palette().window_theme().paint_taskbar(painter, rect(), palette());
+        if (modern) {
+            painter.clear_rect(event.rect(), Color::Transparent);
+            painter.fill_rect_with_rounded_corners(rect(), palette().threed_shadow1(), 11);
+            painter.fill_rect_with_rounded_corners(rect().shrunken(2, 2), palette().window(), 10);
+        } else {
+            palette().window_theme().paint_taskbar(painter, rect(), palette());
+        }
     }
 
     virtual void did_layout() override
     {
+        if (modern) {
+            if (on_layout)
+                on_layout();
+            return;
+        }
         WindowList::the().for_each_window([&](auto& window) {
             if (auto* button = window.button())
                 static_cast<TaskbarButton*>(button)->update_taskbar_rect();
@@ -172,6 +186,14 @@ ErrorOr<void> TaskbarWindow::populate_taskbar()
     m_show_desktop_button->set_fixed_size(24, 24);
     m_show_desktop_button->on_click = TaskbarWindow::show_desktop_button_clicked;
 
+    m_dock = main_widget->add<Taskbar::DockWidget>(*m_quick_launch, m_identity_apps);
+    m_dock->on_width_change = [this](int width) {
+        auto screen = GUI::Desktop::the().rects()[GUI::Desktop::the().main_screen_index()];
+        set_rect(screen.x() + (screen.width() - width) / 2, screen.bottom() - Gfx::DesktopGeometry::dock_bottom_margin - Gfx::DesktopGeometry::dock_height, width, Gfx::DesktopGeometry::dock_height);
+    };
+    main_widget->on_layout = [this] { m_dock->update_taskbar_rects(); };
+    m_quick_launch->on_entries_change = [this] { schedule_dock_update(); };
+
     on_screen_rects_change(GUI::Desktop::the().rects(), GUI::Desktop::the().main_screen_index());
     return {};
 }
@@ -238,6 +260,41 @@ void TaskbarWindow::on_screen_rects_change(Vector<Gfx::IntRect, 4> const& rects,
             m_launcher->hide();
     }
     update_applet_area();
+    update_dock();
+}
+
+void TaskbarWindow::schedule_dock_update()
+{
+    if (m_dock_update_pending || !Gfx::DesktopGeometry::uses_modern_dock())
+        return;
+    m_dock_update_pending = true;
+    deferred_invoke([this] {
+        m_dock_update_pending = false;
+        update_dock();
+    });
+}
+
+void TaskbarWindow::update_dock()
+{
+    if (!m_dock)
+        return;
+    bool modern = Gfx::DesktopGeometry::uses_modern_dock();
+    auto* root = static_cast<TaskbarWidget*>(main_widget());
+    root->modern = modern;
+    root->layout()->set_margins(modern ? GUI::Margins {} : GUI::Margins { 2, 3, 0, 3 });
+    m_quick_launch->set_visible(!modern);
+    m_task_button_container->set_visible(!modern);
+    m_show_desktop_button->set_visible(!modern);
+    m_dock->set_visible(modern);
+    set_has_alpha_channel(modern || GUI::Application::the()->palette().window_theme().taskbar_uses_alpha());
+    auto screen = GUI::Desktop::the().rects()[GUI::Desktop::the().main_screen_index()];
+    if (modern) {
+        m_dock->refresh(screen.width() - 16, m_current_workspace_row, m_current_workspace_column);
+    } else {
+        set_rect(screen.x(), screen.bottom() - taskbar_height(), screen.width(), taskbar_height());
+    }
+    root->do_layout();
+    root->update();
 }
 
 void TaskbarWindow::update_applet_area()
@@ -331,7 +388,9 @@ void TaskbarWindow::event(Core::Event& event)
         set_start_button_font(Gfx::FontDatabase::default_font().bold_variant());
         break;
     case GUI::Event::ThemeChange:
-        set_has_alpha_channel(GUI::Application::the()->palette().window_theme().taskbar_uses_alpha());
+        if (m_launcher)
+            m_launcher->hide();
+        update_dock();
         break;
     }
     Window::event(event);
@@ -374,6 +433,7 @@ void TaskbarWindow::wm_event(GUI::WMEvent& event)
     case GUI::Event::WM_WindowIconBitmapChanged: {
         auto& changed_event = static_cast<GUI::WMWindowIconBitmapChangedEvent&>(event);
         if (auto* window = WindowList::the().window(identifier)) {
+            window->set_icon(changed_event.bitmap());
             if (window->button()) {
                 auto icon = changed_event.bitmap();
                 if (icon->height() != taskbar_icon_size() || icon->width() != taskbar_icon_size()) {
@@ -482,6 +542,8 @@ void TaskbarWindow::wm_event(GUI::WMEvent& event)
     default:
         break;
     }
+    if (event.type() == GUI::Event::WM_ApplicationIdentity || event.type() == GUI::Event::WM_WindowStateChanged || event.type() == GUI::Event::WM_WindowRemoved || event.type() == GUI::Event::WM_WindowIconBitmapChanged || event.type() == GUI::Event::WM_WorkspaceChanged)
+        schedule_dock_update();
 }
 
 void TaskbarWindow::screen_rects_change_event(GUI::ScreenRectsChangeEvent& event)

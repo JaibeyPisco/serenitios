@@ -103,6 +103,10 @@ public:
     virtual ~QuickLaunchWidget() override = default;
 
     ErrorOr<bool> add_from_pid(pid_t pid);
+    auto const& entries() const { return m_entries; }
+    Function<void()> on_entries_change;
+    void remove_pinned_path(ByteString const& path);
+    void move_pinned_path(ByteString const& path, int delta);
 
 protected:
     virtual void config_key_was_removed(StringView, StringView, StringView) override;

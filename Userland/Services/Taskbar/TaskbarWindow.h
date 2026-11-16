@@ -20,6 +20,7 @@
 class ApplicationLauncher;
 namespace Taskbar {
 class ClockWidget;
+class DockWidget;
 }
 
 class TaskbarWindow final : public GUI::Window
@@ -55,6 +56,8 @@ private:
     virtual void screen_rects_change_event(GUI::ScreenRectsChangeEvent&) override;
 
     void update_applet_area();
+    void update_dock();
+    void schedule_dock_update();
 
     bool is_window_on_current_workspace(::Window&) const;
     void workspace_change_event(unsigned, unsigned);
@@ -62,6 +65,7 @@ private:
     void set_start_button_font(Gfx::Font const&);
 
     bool m_registered_as_window_manager { false };
+    bool m_dock_update_pending { false };
     RefPtr<GUI::Window> m_top_panel;
     RefPtr<GUI::Menu> m_system_menu;
     RefPtr<ApplicationLauncher> m_launcher;
@@ -73,6 +77,7 @@ private:
     RefPtr<GUI::Button> m_start_button;
     RefPtr<GUI::Button> m_show_desktop_button;
     RefPtr<Taskbar::QuickLaunchWidget> m_quick_launch;
+    RefPtr<Taskbar::DockWidget> m_dock;
     RefPtr<Taskbar::ClockWidget> m_clock_widget;
 
     RefPtr<Desktop::AppFile> m_assistant_app_file;

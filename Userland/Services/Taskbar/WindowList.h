@@ -67,6 +67,7 @@ public:
     Optional<int> progress() const { return m_progress; }
 
     Gfx::Bitmap const* icon() const { return m_icon.ptr(); }
+    void set_icon(RefPtr<Gfx::Bitmap> icon) { m_icon = move(icon); }
 
 private:
     WindowIdentifier m_identifier;

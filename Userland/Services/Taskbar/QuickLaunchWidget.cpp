@@ -43,7 +43,10 @@ OwnPtr<QuickLaunchEntry> QuickLaunchEntry::create_from_path(StringView path)
         if (!path.starts_with('/'))
             af_path = ByteString::formatted("{}/{}", Desktop::AppFile::APP_FILES_DIRECTORY, path);
 
-        return make<QuickLaunchEntryAppFile>(Desktop::AppFile::open(af_path));
+        auto app = Desktop::AppFile::open(af_path);
+        if (!app->is_valid())
+            return {};
+        return make<QuickLaunchEntryAppFile>(move(app));
     }
 
     auto stat_or_error = Core::System::stat(path);
@@ -419,6 +422,36 @@ void QuickLaunchWidget::repaint()
 {
     resize();
     update();
+    if (on_entries_change)
+        on_entries_change();
+}
+
+void QuickLaunchWidget::remove_pinned_path(ByteString const& path)
+{
+    for (auto const& entry : m_entries) {
+        if (entry->path() == path) {
+            auto name = entry->name();
+            remove_entry(name);
+            repaint();
+            return;
+        }
+    }
+}
+
+void QuickLaunchWidget::move_pinned_path(ByteString const& path, int delta)
+{
+    for (size_t i = 0; i < m_entries.size(); ++i) {
+        if (m_entries[i]->path() != path)
+            continue;
+        auto destination = static_cast<int>(i) + delta;
+        if (destination < 0 || destination >= static_cast<int>(m_entries.size()))
+            return;
+        swap(m_entries[i], m_entries[destination]);
+        for (size_t index = 0; index < m_entries.size(); ++index)
+            Config::write_string(CONFIG_DOMAIN, CONFIG_GROUP_ENTRIES, sanitize_name(m_entries[index]->name()), entry_to_config_string(index, m_entries[index]));
+        repaint();
+        return;
+    }
 }
 
 void QuickLaunchWidget::set_or_insert_entry(NonnullOwnPtr<QuickLaunchEntry> entry, bool save)

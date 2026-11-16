@@ -25,6 +25,10 @@ def main():
     parser.add_argument("--fixture", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--theme", default="Modern Dark")
+    parser.add_argument("--linger", type=int, default=0)
+    parser.add_argument("--desktop-fixtures", type=Path)
+    parser.add_argument("--width", type=int, default=1024)
+    parser.add_argument("--height", type=int, default=768)
     args = parser.parse_args()
     work = args.output.resolve()
     work.mkdir(parents=True, exist_ok=False)
@@ -66,11 +70,17 @@ def main():
         (build / "Userland/Services/WindowServer/WindowServer", "/bin/WindowServer"),
         (build / "Userland/Libraries/LibGUI/libgui.so.serenity", "/usr/lib/libgui.so.serenity"),
         (build / "Userland/Libraries/LibDesktop/libdesktop.so.serenity", "/usr/lib/libdesktop.so.serenity"),
+        (build / "Userland/Applications/Run/Run", "/bin/Run"),
     ]:
         install(host, guest)
     fixture = args.fixture.resolve(strict=True)
     install(fixture, "/bin/TestApplicationIdentity", False)
     install(fixture, "/bin/UnknownApplicationIdentity", False)
+    if args.desktop_fixtures:
+        for name in ["TestModernDockObserver", "TestModernDockGeometry", "TestFileOperationErrors", "TestAsyncZip"]:
+            host = args.desktop_fixtures.resolve() / name
+            if host.exists():
+                install(host, f"/bin/{name}", False)
     for name, executable, extra in [
         ("TestApplicationIdentity", "/bin/TestApplicationIdentity", ""),
         ("IdentityArguments", "/bin/IdentityArguments", "Arguments=profile\n"),
@@ -85,14 +95,15 @@ def main():
         if host.exists():
             import re
             text = host.read_text()
-            text = re.sub(r"(?m)^Width=\d+", "Width=1024", text)
-            text = re.sub(r"(?m)^Height=\d+", "Height=768", text)
+            text = re.sub(r"(?m)^Width=\d+", f"Width={args.width}", text)
+            text = re.sub(r"(?m)^Height=\d+", f"Height={args.height}", text)
             text = re.sub(r"(?m)^Name=.*$", f"Name={args.theme}", text)
             host.write_text(text)
             install(host, guest, mode="0100644")
     service = work / "SystemServer.ini"
     debug(f"dump /home/anon/.config/SystemServer.ini {service}")
-    service.write_text(service.read_text() + "\n[IdentityProbe]\nExecutable=/bin/TestApplicationIdentity\nKeepAlive=false\n")
+    executable = "TestModernDockObserver" if args.desktop_fixtures else "TestApplicationIdentity"
+    service.write_text(service.read_text() + f"\n[IdentityProbe]\nExecutable=/bin/{executable}\nKeepAlive=false\n")
     install(service, "/home/anon/.config/SystemServer.ini", mode="0100644")
     with (work / "fsck.log").open("w") as log:
         subprocess.run(["e2fsck", "-f", "-n", str(image)], stdout=log, stderr=subprocess.STDOUT, check=True)
@@ -115,14 +126,38 @@ def main():
                     raise RuntimeError("Guest assertion; inspect serial.log")
                 if guest.poll() is not None:
                     raise RuntimeError("Guest exited before identity checks completed")
-                if "APPLICATION IDENTITY PASS" in serial:
+                if ("DOCK OBSERVER READY" if args.desktop_fixtures else "APPLICATION IDENTITY PASS") in serial:
                     break
                 time.sleep(0.2)
             else:
                 raise TimeoutError("No identity pass marker")
             monitor = monitor_module.Monitor(work / "qmp.sock")
-            monitor.screenshot(work / "identity-pass.png")
+            def screenshot(path):
+                import struct, zlib, binascii
+                ppm = path.with_suffix(".ppm")
+                monitor.execute("screendump", {"filename": str(ppm)})
+                magic, dimensions, maximum, pixels = ppm.read_bytes().split(b"\n", 3)
+                width, height = map(int, dimensions.split())
+                assert magic == b"P6" and maximum == b"255"
+                def chunk(kind, data):
+                    return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", binascii.crc32(kind + data))
+                scan = b"".join(b"\0" + pixels[y * width * 3:(y + 1) * width * 3] for y in range(height))
+                path.write_bytes(b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)) + chunk(b"IDAT", zlib.compress(scan)) + chunk(b"IEND", b""))
+            screenshot(work / ("desktop-ready.png" if args.desktop_fixtures else "identity-pass.png"))
             (work / "ready-for-classic-input").touch()
+            if args.desktop_fixtures:
+                monitor.close()
+                monitor = None
+                deadline = time.monotonic() + args.linger
+                while guest.poll() is None and time.monotonic() < deadline:
+                    time.sleep(0.5)
+                if guest.poll() is None:
+                    monitor = monitor_module.Monitor(work / "qmp.sock")
+                    monitor.execute("quit")
+                    guest.wait(timeout=10)
+                assert digest(source) == original
+                (work / "desktop-provenance.json").write_text(json.dumps(dict(theme=args.theme, source_sha256=original, installed=hashes), indent=2))
+                return
             offset = len((work / "serial.log").read_text(errors="replace"))
             for _ in range(3):
                 monitor.key("meta_l-2")
@@ -138,6 +173,7 @@ def main():
             )
             assert restored_after_minimize, "Classic Super+2 did not minimize and then restore a window"
             monitor.screenshot(work / "classic-final.png")
+            time.sleep(args.linger)
             monitor.execute("quit")
             guest.wait(timeout=10)
         finally:

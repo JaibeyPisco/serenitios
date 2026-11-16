@@ -2180,6 +2180,7 @@ void WindowManager::invalidate_after_theme_or_font_change()
         window_stack.for_each_window([&](Window& window) {
             window.frame().theme_changed();
             window.menubar().font_changed(window.rect());
+            window.recalculate_rect();
             return IterationDecision::Continue;
         });
         return IterationDecision::Continue;

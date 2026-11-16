@@ -31,6 +31,12 @@ The user's 1920 x 1080 preference is preserved; reference tests also exercised
 
 ## Start the updated desktop
 
+V7.2 (2026-11-16) adds a centered functional dock for Modern Dark/Light and keeps
+the V7.1 classic lower Taskbar for Default. The active pair is
+`modern-v72.ext2` / `desktop-v72.qcow2`; V7.1's base/overlay remain recoverable.
+See [dock validation and recovery](ModernDockValidation.md) and the separate
+[WM identity contract](ApplicationIdentityContract.md).
+
 From Ubuntu/WSL in this repository:
 
 ```
@@ -51,17 +57,17 @@ existing runner's handling of absolute mouse input.
 Use Display Settings -> Appearance -> Theme to select Modern Light, Modern
 Dark or Default. The guest command `DisplaySettings -t themes` opens that page.
 Modern includes the existing circular title controls, V3 controls and V4 File
-Manager navigation/selection; V5 adds categorized Settings and V6 adds the application launcher. V7.1 adds the top panel; a dock has not been added.
+Manager navigation/selection; V5 adds categorized Settings and V6 adds the application launcher. V7.1 adds the top panel; V7.2 adds the Modern dock.
 
 Normal guest changes are stored in the overlay selected by the profile
-(currently `Build/desktop-modern/desktop-v71.qcow2`).
+(currently `Build/desktop-modern/desktop-v72.qcow2`).
 `./run-modern.sh --test` creates a disposable copy-on-write session; its guest
 changes are discarded when QEMU exits. `--headless` supports QMP validation.
 Temporary session directories are removed on normal launcher exit, and only
 one latest serial log/command per mode is retained. The launcher prevents a
 second simultaneous launch and validates the overlay's backing path.
 
-The selected backing content is `Build/desktop-modern/modern-v71.ext2` and the
+The selected backing content is `Build/desktop-modern/modern-v72.ext2` and the
 pinned, unchanged kernel is `Build/desktop-modern/Kernel`. Keep the base and
 its writable overlay together: do not replace a base under an existing writable
 overlay. A future userland update should use a new base/overlay pair.

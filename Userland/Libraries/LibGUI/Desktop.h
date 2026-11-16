@@ -48,7 +48,7 @@ public:
     unsigned workspace_rows() const { return m_workspace_rows; }
     unsigned workspace_columns() const { return m_workspace_columns; }
 
-    int taskbar_height() const { return Gfx::DesktopGeometry::bottom_panel_height; }
+    int taskbar_height() const { return Gfx::DesktopGeometry::bottom_reserved_height(); }
 
     void did_receive_screen_rects(Badge<ConnectionToWindowServer>, Vector<Gfx::IntRect, 4> const&, size_t, unsigned, unsigned);
 
