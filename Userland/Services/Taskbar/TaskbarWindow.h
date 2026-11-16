@@ -76,6 +76,7 @@ private:
     RefPtr<Taskbar::ClockWidget> m_clock_widget;
 
     RefPtr<Desktop::AppFile> m_assistant_app_file;
+    Vector<NonnullRefPtr<Desktop::AppFile>> m_identity_apps;
 
     unsigned m_current_workspace_row { 0 };
     unsigned m_current_workspace_column { 0 };

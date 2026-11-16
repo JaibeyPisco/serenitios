@@ -9,6 +9,7 @@
 
 #include "TaskbarWindow.h"
 #include "ApplicationLauncher.h"
+#include "ApplicationIdentity.h"
 #include "ClockWidget.h"
 #include "QuickLaunchWidget.h"
 #include "TaskbarButton.h"
@@ -34,6 +35,7 @@
 #include <LibGfx/Palette.h>
 #include <LibGfx/WindowTheme.h>
 #include <stdio.h>
+
 
 class TaskbarWidget final : public GUI::Widget {
     C_OBJECT(TaskbarWidget);
@@ -129,6 +131,9 @@ TaskbarWindow::TaskbarWindow()
 
 ErrorOr<void> TaskbarWindow::populate_taskbar()
 {
+    // Include hidden launch profiles too: filtering to the launcher's visible
+    // apps could make an ambiguous executable look unique.
+    Desktop::AppFile::for_each([this](auto app) { m_identity_apps.append(move(app)); });
     auto main_widget = TRY(TaskbarWidget::create());
     set_main_widget(main_widget);
 
@@ -336,6 +341,12 @@ void TaskbarWindow::wm_event(GUI::WMEvent& event)
 {
     WindowIdentifier identifier { event.client_id(), event.window_id() };
     switch (event.type()) {
+    case GUI::Event::WM_ApplicationIdentity: {
+        auto& identity = static_cast<GUI::WMApplicationIdentityEvent&>(event);
+        if (auto* window = WindowList::the().window(identifier))
+            window->set_application_file(Taskbar::application_file_for_executable(identity.executable(), m_identity_apps));
+        break;
+    }
     case GUI::Event::WM_WindowRemoved: {
         if constexpr (EVENT_DEBUG) {
             auto& removed_event = static_cast<GUI::WMWindowRemovedEvent&>(event);

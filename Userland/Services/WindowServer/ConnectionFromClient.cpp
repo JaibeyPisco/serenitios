@@ -6,6 +6,7 @@
 
 #include <AK/Badge.h>
 #include <LibCore/MimeData.h>
+#include <LibCore/ProcessStatisticsReader.h>
 #include <LibCore/Timer.h>
 #include <LibGfx/Bitmap.h>
 #include <LibGfx/StandardCursor.h>
@@ -53,6 +54,20 @@ ConnectionFromClient::ConnectionFromClient(NonnullOwnPtr<Core::LocalSocket> clie
     if (!s_connections)
         s_connections = new HashMap<int, NonnullRefPtr<ConnectionFromClient>>;
     s_connections->set(client_id, *this);
+
+    // Resolve the authenticated connection owner once, while it is alive. Never
+    // look up an old PID later, infer identity from a title, or follow parents.
+    // Failure leaves this connection unidentified without affecting its windows.
+    auto peer = socket().peer_pid();
+    auto stats = Core::ProcessStatisticsReader::get_all(false);
+    if (!peer.is_error() && !stats.is_error()) {
+        for (auto const& process : stats.value().processes) {
+            if (process.pid == peer.value()) {
+                m_application_executable = process.executable;
+                break;
+            }
+        }
+    }
 
     auto& wm = WindowManager::the();
     async_fast_greet(Screen::rects(), Screen::main().index(), wm.window_stack_rows(), wm.window_stack_columns(), Gfx::current_system_theme_buffer(), Gfx::FontDatabase::default_font_query(), Gfx::FontDatabase::fixed_width_font_query(), Gfx::FontDatabase::window_title_font_query(), wm.system_effects().effects(), client_id);

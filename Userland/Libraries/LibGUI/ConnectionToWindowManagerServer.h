@@ -40,6 +40,7 @@ private:
     virtual void workspace_changed(i32, u32, u32) override;
     virtual void keymap_changed(i32, ByteString const&) override;
     virtual void add_to_quick_launch(i32, pid_t) override;
+    virtual void window_application_identity(i32, i32, i32, ByteString const&) override;
 };
 
 }

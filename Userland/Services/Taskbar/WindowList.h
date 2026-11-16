@@ -28,6 +28,8 @@ public:
     WindowIdentifier const& identifier() const { return m_identifier; }
 
     ByteString title() const { return m_title; }
+    ByteString const& application_file() const { return m_application_file; }
+    void set_application_file(ByteString file) { m_application_file = move(file); }
     void set_title(ByteString const& title) { m_title = title; }
 
     Gfx::IntRect rect() const { return m_rect; }
@@ -69,6 +71,7 @@ public:
 private:
     WindowIdentifier m_identifier;
     ByteString m_title;
+    ByteString m_application_file;
     Gfx::IntRect m_rect;
     RefPtr<GUI::Button> m_button;
     RefPtr<Gfx::Bitmap> m_icon;
@@ -92,6 +95,19 @@ public:
     }
 
     Window* window(WindowIdentifier const&);
+    template<typename Callback>
+    void for_each_window_in_application(Window const& representative, Callback callback)
+    {
+        for_each_window([&](auto& window) {
+            if (representative.application_file().is_empty()) {
+                if (window.identifier() == representative.identifier())
+                    callback(window);
+            } else if (window.application_file() == representative.application_file()) {
+                callback(window);
+            }
+        });
+    }
+
     Window& ensure_window(WindowIdentifier const&);
     void remove_window(WindowIdentifier const&);
 

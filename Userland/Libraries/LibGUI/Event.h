@@ -76,6 +76,7 @@ public:
         WM_WorkspaceChanged,
         WM_KeymapChanged,
         WM_AddToQuickLaunch,
+        WM_ApplicationIdentity,
         __End_WM_Events,
     };
 
@@ -165,6 +166,20 @@ public:
         : WMEvent(Event::Type::WM_WindowRemoved, client_id, window_id)
     {
     }
+};
+
+class WMApplicationIdentityEvent : public WMEvent {
+public:
+    WMApplicationIdentityEvent(int client_id, int window_id, ByteString executable)
+        : WMEvent(Event::WM_ApplicationIdentity, client_id, window_id)
+        , m_executable(move(executable))
+    {
+    }
+
+    ByteString const& executable() const { return m_executable; }
+
+private:
+    ByteString m_executable;
 };
 
 class WMWindowStateChangedEvent : public WMEvent {

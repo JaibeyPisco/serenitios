@@ -39,6 +39,7 @@ public:
 
     bool is_unresponsive() const { return m_unresponsive; }
     bool does_global_mouse_tracking() const { return m_does_global_mouse_tracking; }
+    ByteString const& application_executable() const { return m_application_executable; }
 
     static ConnectionFromClient* from_client_id(int client_id);
     static void for_each_client(Function<void(ConnectionFromClient&)>);
@@ -83,6 +84,7 @@ public:
     void notify_about_theme_change();
 
 private:
+    ByteString m_application_executable;
     explicit ConnectionFromClient(NonnullOwnPtr<Core::LocalSocket>, int client_id);
 
     // ^ConnectionFromClient
