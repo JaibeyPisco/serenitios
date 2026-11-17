@@ -1,0 +1,6 @@
+#!/bin/sh
+# Copyright (c) 2026, the SerenityOS developers.
+# SPDX-License-Identifier: BSD-2-Clause
+cd /media/pisco/payload || exit 1
+sha256sum -c SHA256SUMS || exit 1
+echo 'V81 PAYLOAD VERIFIED'

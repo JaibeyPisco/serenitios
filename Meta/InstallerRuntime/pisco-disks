@@ -1,0 +1,57 @@
+#!/bin/sh
+# Copyright (c) 2026, the SerenityOS developers.
+# SPDX-License-Identifier: BSD-2-Clause
+# Conservative inventory. Eligibility is NOT a full-disk empty check.
+export PATH=/bin:/sbin
+source=$(cat /run/pisco/source 2>/dev/null) || exit 1
+classify()
+{
+    disk=$1
+    name=${disk#/dev/}
+    reason=unsupported
+    [ "$disk" = "/dev/$(basename "$disk")" ] || return
+    [ -b "$disk" ] && [ -d "/sys/class/block/$name/device" ] || return
+    [ ! -f "/sys/class/block/$name/partition" ] || return
+    [ "$disk" != "$source" ] || { reason=installer-source; return; }
+    [ "$(cat "/sys/class/block/$name/ro")" = 0 ] || { reason=read-only; return; }
+    # Reject a whole disk if it or ANY of its children is mounted or swap.
+    for mounted_entry in /sys/class/block/"$name" /sys/class/block/"$name"/"$name"*; do
+        [ -e "$mounted_entry/dev" ] || continue
+        child=/dev/$(basename "$mounted_entry")
+        if awk -v d="$child" '$1 == d { found=1 } END { exit !found }' /proc/mounts /proc/swaps; then
+            reason=mounted-or-swap
+            return
+        fi
+    done
+    for partition_entry in /sys/class/block/"$name"/"$name"*; do
+        [ ! -f "$partition_entry/partition" ] || { reason=existing-partitions; return; }
+    done
+    if blkid -p -c /dev/null "$disk" >/dev/null 2>&1; then
+        reason=existing-signature
+        return
+    fi
+    reason=candidate-unverified
+}
+if [ "${1:-}" = --eligible ]; then
+    [ "$#" = 2 ] || exit 1
+    classify "$2"
+    [ "$reason" = candidate-unverified ] && exit 0
+    echo "V81 REJECTED $2: $reason"
+    exit 1
+fi
+[ "$#" = 0 ] || exit 1
+printf 'SOURCE|%s\n' "$source"
+for entry in /sys/class/block/*; do
+    [ -d "$entry/device" ] && [ ! -f "$entry/partition" ] || continue
+    disk=/dev/$(basename "$entry")
+    classify "$disk"
+    sectors=$(cat "$entry/size")
+    model=$(cat "$entry/device/model" 2>/dev/null | tr '\n|' '  ')
+    serial=$(lsblk -dn -o SERIAL "$disk" 2>/dev/null | tr '\n|' '  ')
+    if [ -z "$(printf '%s' "$serial" | tr -d ' ')" ]; then
+        serial=$(cat "$entry/device/wwid" 2>/dev/null | tr '\n|' '  ')
+    fi
+    transport=disk
+    case "$(readlink -f "$entry/device")" in *usb*) transport=usb ;; *nvme*) transport=nvme ;; esac
+    printf 'DISK|%s|bytes=%s|transport=%s|model=%s|serial=%s|%s\n' "$disk" "$((sectors * 512))" "$transport" "$model" "$serial" "$reason"
+done

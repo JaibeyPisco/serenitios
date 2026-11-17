@@ -1,0 +1,17 @@
+#!/bin/sh
+# Copyright (c) 2026, the SerenityOS developers.
+# SPDX-License-Identifier: BSD-2-Clause
+export PATH=/bin:/sbin
+[ "$#" = 1 ] || { echo 'Usage: pisco-plan /dev/WHOLE_DISK'; exit 1; }
+target=$1
+pisco-disks --eligible "$target" || exit 1
+name=${target#/dev/}
+identity=$(cat "/sys/class/block/$name/dev" "/sys/class/block/$name/size")
+echo "Planning only. No installation or formatting is implemented in V8.1."
+echo "Selected target: $target; source: $(cat /run/pisco/source)"
+echo "Type exactly: PLAN $target"
+IFS= read -r answer
+[ "$answer" = "PLAN $target" ] || { echo 'V81 PLAN CANCELLED'; exit 2; }
+pisco-disks --eligible "$target" || exit 1
+[ "$identity" = "$(cat "/sys/class/block/$name/dev" "/sys/class/block/$name/size")" ] || { echo 'V81 REJECTED: target changed'; exit 1; }
+echo "V81 PLAN ONLY target=$target source=$(cat /run/pisco/source) writer=unavailable"

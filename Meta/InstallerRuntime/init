@@ -1,0 +1,55 @@
+#!/bin/sh
+# Copyright (c) 2026, the SerenityOS developers.
+# SPDX-License-Identifier: BSD-2-Clause
+export PATH=/bin:/sbin
+mount -t devtmpfs devtmpfs /dev
+mount -t proc proc /proc
+mount -t sysfs sysfs /sys
+mount -t tmpfs tmpfs /run
+mkdir -p /run/pisco /media/pisco
+for module in /modules/*.ko; do
+    insmod "$module" || echo "Module load failed: $module"
+done
+medium_uuid=
+for argument in $(cat /proc/cmdline); do
+    case "$argument" in pisco_media=*) medium_uuid=${argument#pisco_media=} ;; esac
+done
+if [ -z "$medium_uuid" ]; then
+    echo 'V81 FATAL: missing installer medium UUID'
+    exec sh
+fi
+for attempt in $(seq 1 30); do
+    devices=$(blkid -c /dev/null -t "UUID=$medium_uuid" -o device)
+    [ -n "$devices" ] && break
+    sleep 1
+done
+set -- $devices
+if [ "$#" != 1 ]; then
+    echo 'V81 FATAL: installer medium missing or ambiguous'
+    exec sh
+fi
+partition=$1
+name=${partition#/dev/}
+if [ ! -f "/sys/class/block/$name/partition" ]; then
+    echo 'V81 FATAL: installer data must be a partition'
+    exec sh
+fi
+source=$(basename "$(dirname "$(readlink -f "/sys/class/block/$name")")")
+printf '/dev/%s\n' "$source" > /run/pisco/source
+if ! mount -t ext4 -o ro,noload "$partition" /media/pisco; then
+    echo 'V81 FATAL: cannot mount installer data read-only'
+    exec sh
+fi
+if [ "$(cat /media/pisco/PISCO_INSTALLER_ID)" != 'PISCO-V81' ]; then
+    echo 'V81 FATAL: wrong installer data'
+    exec sh
+fi
+echo 'PISCO OS V8.1 - Linux installation environment only' | tee /dev/tty0
+echo 'The PISCO payload runs its own SerenityOS kernel.' | tee /dev/tty0
+pisco-disks | tee /dev/tty0
+echo 'V81 READY: disk identification and planning only; no disk writer installed.' | tee /dev/tty0
+echo 'Commands: pisco-disks; pisco-plan /dev/DISK; pisco-verify; poweroff -f' | tee /dev/tty0
+while :; do
+    setsid cttyhack sh </dev/ttyS0 >/dev/ttyS0 2>&1
+    sleep 1
+done
