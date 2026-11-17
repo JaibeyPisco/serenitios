@@ -38,6 +38,20 @@
 #include <stdio.h>
 
 
+class TopPanelWidget final : public GUI::Widget {
+    C_OBJECT(TopPanelWidget);
+public:
+    Function<void()> on_layout;
+
+private:
+    TopPanelWidget() = default;
+    virtual void did_layout() override
+    {
+        if (on_layout)
+            on_layout();
+    }
+};
+
 class TaskbarWidget final : public GUI::Widget {
     C_OBJECT(TaskbarWidget);
 
@@ -166,7 +180,8 @@ ErrorOr<void> TaskbarWindow::populate_taskbar()
     m_top_panel = GUI::Window::construct();
     m_top_panel->set_window_type(GUI::WindowType::Taskbar);
     m_top_panel->set_title("SerenityOS Top Panel");
-    auto top = m_top_panel->set_main_widget<GUI::Widget>();
+    auto top = m_top_panel->set_main_widget<TopPanelWidget>();
+    top->on_layout = [this] { position_applet_area(); };
     top->set_fill_with_background_color(true);
     top->set_background_role(Gfx::ColorRole::Window);
     top->set_layout<GUI::HorizontalBoxLayout>(GUI::Margins { 2, 8 }, 8);
@@ -250,6 +265,7 @@ void TaskbarWindow::toggle_show_desktop()
 
 void TaskbarWindow::on_screen_rects_change(Vector<Gfx::IntRect, 4> const& rects, size_t main_screen_index)
 {
+    m_last_applet_area_position.clear();
     auto const& rect = rects[main_screen_index];
     Gfx::IntRect new_rect { rect.x(), rect.bottom() - taskbar_height(), rect.width(), taskbar_height() };
     set_rect(new_rect);
@@ -310,11 +326,20 @@ void TaskbarWindow::update_applet_area()
     bool fits = m_applet_area_size.width() + m_clock_widget->max_width().as_int() + identity_width + 48 <= m_top_panel->width();
     m_applet_area_container->set_visible(fits);
     top->do_layout();
+    position_applet_area();
+}
+
+void TaskbarWindow::position_applet_area()
+{
+    if (!m_registered_as_window_manager || !m_top_panel || !m_applet_area_container || m_applet_area_size.is_empty())
+        return;
     auto new_rect = Gfx::IntRect({}, m_applet_area_size).centered_within(m_applet_area_container->screen_relative_rect());
-    if (!fits)
+    if (!m_applet_area_container->is_visible())
         new_rect.set_location({ m_top_panel->rect().right() + 1, m_top_panel->y() });
-    if (m_registered_as_window_manager && !m_applet_area_size.is_empty())
-        GUI::ConnectionToWindowManagerServer::the().async_set_applet_area_position(new_rect.location());
+    if (m_last_applet_area_position == new_rect.location())
+        return;
+    m_last_applet_area_position = new_rect.location();
+    GUI::ConnectionToWindowManagerServer::the().async_set_applet_area_position(new_rect.location());
 }
 
 NonnullRefPtr<GUI::Button> TaskbarWindow::create_button(WindowIdentifier const& identifier)
@@ -386,11 +411,15 @@ void TaskbarWindow::event(Core::Event& event)
     }
     case GUI::Event::FontsChange:
         set_start_button_font(Gfx::FontDatabase::default_font().bold_variant());
+        m_last_applet_area_position.clear();
+        update_applet_area();
         break;
     case GUI::Event::ThemeChange:
         if (m_launcher)
             m_launcher->hide();
         update_dock();
+        m_last_applet_area_position.clear();
+        update_applet_area();
         break;
     }
     Window::event(event);

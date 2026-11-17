@@ -10,6 +10,7 @@
 #include "Menu.h"
 #include <AK/Function.h>
 #include <AK/IterationDecision.h>
+#include <AK/NonnullRefPtr.h>
 #include <AK/Vector.h>
 
 namespace WindowServer {
@@ -64,7 +65,7 @@ public:
     void for_each_menu(Function<IterationDecision(Menu&)> callback)
     {
         for (auto& menu : m_menus) {
-            if (callback(menu) == IterationDecision::Break)
+            if (callback(*menu) == IterationDecision::Break)
                 return;
         }
     }
@@ -73,13 +74,15 @@ public:
     {
         m_next_menu_location = { 0, 0 };
         for (auto& menu : m_menus)
-            layout_menu(menu, window_rect);
+            layout_menu(*menu, window_rect);
     }
 
 private:
     void layout_menu(Menu&, Gfx::IntRect window_rect);
 
-    Vector<Menu&> m_menus;
+    // A closing window can still be rendered after its client's menus have
+    // been removed. Keep each menu alive for as long as this frame uses it.
+    Vector<NonnullRefPtr<Menu>> m_menus;
     Menu* m_flashed_menu { nullptr };
 
     // FIXME: This doesn't support removing menus from a menubar or inserting a

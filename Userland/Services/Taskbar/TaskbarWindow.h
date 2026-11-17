@@ -56,6 +56,7 @@ private:
     virtual void screen_rects_change_event(GUI::ScreenRectsChangeEvent&) override;
 
     void update_applet_area();
+    void position_applet_area();
     void update_dock();
     void schedule_dock_update();
 
@@ -73,6 +74,7 @@ private:
     RefPtr<Gfx::Bitmap> m_default_icon;
 
     Gfx::IntSize m_applet_area_size;
+    Optional<Gfx::IntPoint> m_last_applet_area_position;
     RefPtr<GUI::Frame> m_applet_area_container;
     RefPtr<GUI::Button> m_start_button;
     RefPtr<GUI::Button> m_show_desktop_button;

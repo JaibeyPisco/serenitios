@@ -37,6 +37,12 @@ the V7.1 classic lower Taskbar for Default. The active pair is
 See [dock validation and recovery](ModernDockValidation.md) and the separate
 [WM identity contract](ApplicationIdentityContract.md).
 
+V7.3 (2026-11-17) consolidates that desktop with applet positioning after layout,
+Settings fitting small screens and retained closing-window menus. The selected
+pair is now `modern-v73.ext2` / `desktop-v73.qcow2`, copied from the latest cold
+V7.2 guest state. V7.2's complete base/overlay pair remains available for recovery.
+See [V7.3 results, evidence and limitations](ModernDesktopConsolidation.md).
+
 From Ubuntu/WSL in this repository:
 
 ```
@@ -60,14 +66,14 @@ Modern includes the existing circular title controls, V3 controls and V4 File
 Manager navigation/selection; V5 adds categorized Settings and V6 adds the application launcher. V7.1 adds the top panel; V7.2 adds the Modern dock.
 
 Normal guest changes are stored in the overlay selected by the profile
-(currently `Build/desktop-modern/desktop-v72.qcow2`).
+(currently `Build/desktop-modern/desktop-v73.qcow2`).
 `./run-modern.sh --test` creates a disposable copy-on-write session; its guest
 changes are discarded when QEMU exits. `--headless` supports QMP validation.
 Temporary session directories are removed on normal launcher exit, and only
 one latest serial log/command per mode is retained. The launcher prevents a
 second simultaneous launch and validates the overlay's backing path.
 
-The selected backing content is `Build/desktop-modern/modern-v72.ext2` and the
+The selected backing content is `Build/desktop-modern/modern-v73.ext2` and the
 pinned, unchanged kernel is `Build/desktop-modern/Kernel`. Keep the base and
 its writable overlay together: do not replace a base under an existing writable
 overlay. A future userland update should use a new base/overlay pair.

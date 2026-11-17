@@ -10,6 +10,7 @@
 #include <LibGUI/Application.h>
 #include <LibGUI/BoxLayout.h>
 #include <LibGUI/Button.h>
+#include <LibGUI/Desktop.h>
 #include <LibGUI/Icon.h>
 #include <LibGUI/ItemListModel.h>
 #include <LibGUI/Label.h>
@@ -228,6 +229,22 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     search.set_focus(true);
 
     window->set_icon(app_icon.bitmap_for_size(16));
+
+    // Keep the initial frame, including its menus, between the shell panels on
+    // small screens. Retain the normal preferred size/placement when it fits.
+    auto usable = Gfx::DesktopGeometry::work_area(GUI::Desktop::the().rects()[GUI::Desktop::the().main_screen_index()]);
+    auto const& palette = app->palette();
+    auto frame_for_rect = [&](Gfx::IntRect const& rect) {
+        return palette.window_theme().frame_rect_for_window(Gfx::WindowTheme::WindowType::Normal, Gfx::WindowTheme::WindowMode::Other, rect, palette, 1);
+    };
+    auto frame = frame_for_rect(window->rect());
+    if (frame.width() > usable.width() || frame.height() > usable.height()) {
+        auto horizontal_decoration = frame.width() - window->width();
+        auto vertical_decoration = frame.height() - window->height();
+        window->resize(max(420, min(680, usable.width() - horizontal_decoration)), max(300, min(430, usable.height() - vertical_decoration)));
+        frame = frame_for_rect(window->rect());
+        window->move_to(window->position() + usable.location() - frame.location());
+    }
 
     window->show();
     return app->exec();
