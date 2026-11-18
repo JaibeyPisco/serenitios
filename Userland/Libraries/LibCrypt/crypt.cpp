@@ -6,8 +6,9 @@
 
 #include <AK/Base64.h>
 #include <AK/Types.h>
+#include <LibCrypto/Authentication/HMAC.h>
 #include <LibCrypto/Hash/SHA2.h>
-#include <crypt.h>
+#include "crypt.h"
 #include <errno.h>
 #include <string.h>
 
@@ -30,8 +31,46 @@ char* crypt_r(char const* key, char const* salt, struct crypt_data* data)
         return nullptr;
     }
 
+    // Compact PBKDF2-HMAC-SHA256: 96-bit random ASCII salt, 192-bit verifier.
+    // Fits the existing crypt_data ABI. Legacy $5$ remains readable below.
+    // RFC 8018 section 5.2, one 32-byte block, truncated to 24 bytes.
+    if (StringView { salt, strlen(salt) }.starts_with("$p$600000$"sv)) {
+        auto const* value = salt + 10;
+        if (strcspn(value, "$") != 16) {
+            errno = EINVAL;
+            return nullptr;
+        }
+        for (size_t i = 0; i < 16; ++i) {
+            if (!is_ascii_alphanumeric(value[i]) && value[i] != '+' && value[i] != '/') {
+                errno = EINVAL;
+                return nullptr;
+            }
+        }
+        Crypto::Authentication::HMAC<Crypto::Hash::SHA256> prf(StringView { key, strlen(key) });
+        prf.update(StringView { value, 16 });
+        u8 const block[] = { 0, 0, 0, 1 };
+        prf.update(ReadonlyBytes { block, sizeof(block) });
+        auto u = prf.digest();
+        auto result = u;
+        for (size_t iteration = 1; iteration < 600000; ++iteration) {
+            u = prf.process(u.bytes());
+            for (size_t i = 0; i < 32; ++i)
+                result.data[i] ^= u.data[i];
+        }
+        auto encoded = encode_base64(ReadonlyBytes { result.immutable_data(), 24 });
+        if (encoded.is_error()) {
+            errno = ENOMEM;
+            return nullptr;
+        }
+        memcpy(data->result, salt, 26);
+        data->result[26] = '$';
+        memcpy(data->result + 27, encoded.value().bytes_as_string_view().characters_without_null_termination(), 32);
+        data->result[59] = '\0';
+        return data->result;
+    }
+
     // We only support SHA-256 at the moment
-    if (salt[0] != '$' || salt[1] != '5') {
+    if (strlen(salt) < 3 || salt[0] != '$' || salt[1] != '5' || salt[2] != '$') {
         errno = EINVAL;
         return nullptr;
     }

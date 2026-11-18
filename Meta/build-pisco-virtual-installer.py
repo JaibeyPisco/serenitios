@@ -27,6 +27,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--v81', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--payload', type=Path, help='Verified derived payload; original V8.1 remains untouched')
+    parser.add_argument('--user-setup', action='store_true', help='V8.3 mandatory native account setup')
     args = parser.parse_args()
     source = args.v81.resolve(strict=True)
     output = args.output.absolute()
@@ -34,8 +36,10 @@ def main():
         raise ValueError('New output directory outside /dev required')
     v81 = load('v81', REPO / 'Meta/build-pisco-installer.py')
     gpt = load('gpt', REPO / 'Meta/install-serenity.py')
-    payload = source / 'payload'
+    payload = args.payload.resolve(strict=True) if args.payload else source / 'payload'
     release = json.loads((payload / 'release.json').read_text())
+    if bool(release.get('requires_user_setup')) != args.user_setup:
+        raise ValueError('Derived account payload requires mandatory V8.3 setup')
     if release['pisco_commit'] != v81.PISCO_COMMIT:
         raise ValueError('Wrong PISCO release')
     for name, key in [('root.ext2', 'root_sha256'), ('Kernel.efi', 'kernel_efi_sha256')]:
@@ -53,12 +57,21 @@ def main():
         target.chmod(0o755)
     shutil.copy2(REPO / 'Meta/InstallerRuntimeV82/pisco-install', root / 'bin/pisco-install')
     (root / 'bin/pisco-install').chmod(0o755)
+    if args.user_setup:
+        (root / 'bin/pisco-install').rename(root / 'bin/pisco-install-v82')
+        for path in (REPO / 'Meta/InstallerRuntimeV83').iterdir():
+            if path.is_file():
+                shutil.copy2(path, root / 'bin' / path.name)
+                (root / 'bin' / path.name).chmod(0o755)
     # Private runtime addition: V8.1 and its accepted image remain unchanged.
     init = root / 'init'
     init.write_text(init.read_text().replace('PISCO-V81', 'PISCO-V82')
         .replace('V8.1', 'V8.2').replace('V81 READY: disk identification and planning only; no disk writer installed.',
         'V82 READY: virtual-only installer; explicit confirmation required.')
         .replace('Commands: pisco-disks;', 'Commands: pisco-install /dev/DISK; pisco-disks;'))
+    if args.user_setup:
+        init.write_text(init.read_text().replace('PISCO-V82', 'PISCO-V83').replace('V8.2', 'V8.3')
+            .replace('V82 READY:', 'V83 READY:'))
     included = {}
     def binary(path, destination=None):
         path = Path(path).resolve(strict=True)
@@ -80,7 +93,7 @@ def main():
                     ignore=shutil.ignore_patterns('__pycache__', 'test', 'tests'))
     for extension in (root / 'usr/lib/python3.12/lib-dynload').glob('*.so'):
         binary(Path('/usr/lib/python3.12/lib-dynload') / extension.name)
-    for name in ['mkfs.fat', 'mcopy', 'mmd']:
+    for name in ['mkfs.fat', 'mcopy', 'mmd', *(['debugfs', 'e2fsck'] if args.user_setup else [])]:
         binary(shutil.which(name), 'sbin/' + name)
     # mtools uses iconv even for the ASCII-only paths in the ESP. glibc loads
     # these conversion modules dynamically, so ldd cannot discover them.
@@ -98,7 +111,7 @@ def main():
     medium_uuid = str(uuid.uuid4())
     data = output / 'data-root'
     data.mkdir()
-    (data / 'PISCO_INSTALLER_ID').write_text('PISCO-V82\n')
+    (data / 'PISCO_INSTALLER_ID').write_text('PISCO-V83\n' if args.user_setup else 'PISCO-V82\n')
     (data / 'payload').mkdir()
     for name in ['root.ext2', 'Kernel.efi', 'root-manifest.json', 'release.json', 'SHA256SUMS']:
         os.link(payload / name, data / 'payload' / name)
@@ -124,7 +137,7 @@ def main():
     sectors = ((gpt.ROOT_START + (output / 'data.ext2').stat().st_size // 512 + 33 + 2047) // 2048) * 2048
     plan = dict(disk_bytes=sectors * 512, disk_uuid=str(uuid.uuid4()), root_uuid=str(uuid.uuid4()),
                 root_sectors=(output / 'data.ext2').stat().st_size // 512)
-    image = output / 'pisco-installer-v82.img'
+    image = output / ('pisco-installer-v83.img' if args.user_setup else 'pisco-installer-v82.img')
     with image.open('w+b') as stream:
         stream.truncate(plan['disk_bytes'])
         gpt.write_partition_table(stream, plan)
@@ -136,6 +149,8 @@ def main():
                     runtime_inputs=included, scripts={p.name: v81.sha(p) for p in (REPO / 'Meta/InstallerRuntime').iterdir() if p.is_file()},
                     native_grub_sha256=v81.sha(root / 'boot/GRUB.EFI'), initramfs_sha256=v81.sha(output / 'initramfs.gz'))
     manifest['v82_backend_sha256'] = v81.sha(REPO / 'Meta/InstallerRuntimeV82/pisco-install')
+    if args.user_setup:
+        manifest['v83_sources'] = {p.name: v81.sha(p) for p in (REPO / 'Meta/InstallerRuntimeV83').iterdir() if p.is_file()}
     manifest['gconv_inputs'] = {str(p.relative_to(root)): v81.sha(p)
                               for p in (root / 'usr/lib/x86_64-linux-gnu/gconv').rglob('*') if p.is_file()}
     (output / 'build-manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')

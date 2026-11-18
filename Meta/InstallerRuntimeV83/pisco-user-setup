@@ -1,0 +1,134 @@
+#!/bin/python3
+# Copyright (c) 2026, the SerenityOS developers.
+# SPDX-License-Identifier: BSD-2-Clause
+"""Offline native account setup. Plaintext passwords exist only in RAM."""
+import base64
+import getpass
+import hashlib
+import os
+from pathlib import Path
+import re
+import secrets
+import subprocess
+import termios
+import warnings
+
+
+def debug(image, command, write=False):
+    result = subprocess.run(['debugfs', *(['-w'] if write else []), '-R', command, str(image)],
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True)
+    # debugfs may exit zero on command errors. Every mutation is verified below.
+    return result.stdout
+
+
+def read(image, path):
+    result = debug(image, 'cat ' + path)
+    if not result:
+        raise ValueError('missing factory account file')
+    return result
+
+
+def collect(payload):
+    passwd = read(payload / 'root.ext2', '/etc/passwd')
+    groups = read(payload / 'root.ext2', '/etc/group')
+    rows = [line.split(':') for line in passwd.splitlines()]
+    group_rows = [line.split(':') for line in groups.splitlines()]
+    names = {row[0] for row in rows} | {row[0] for row in group_rows}
+    used_ids = {int(row[2]) for row in rows + group_rows}
+    uid = next(value for value in range(1000, 60000) if value not in used_ids)
+    while True:
+        full_name = input('V83 Full name: ').strip()
+        if not 1 <= len(full_name) <= 80 or any(ord(c) < 32 or c in ':\x7f' for c in full_name):
+            print('V83 INVALID full name', flush=True)
+            continue
+        name = input('V83 Username: ').strip()
+        if (not re.fullmatch(r'[a-z][a-z0-9_-]{0,30}', name) or name in names
+                or 'Inode:' in debug(payload / 'root.ext2', 'stat /home/' + name)):
+            print('V83 INVALID or duplicate username', flush=True)
+            continue
+        # Fail closed rather than falling back to getpass's echoed stdin mode.
+        with open('/dev/tty', 'rb', buffering=0) as tty:
+            termios.tcgetattr(tty.fileno())
+        with warnings.catch_warnings():
+            warnings.simplefilter('error', getpass.GetPassWarning)
+            password = getpass.getpass('V83 Password: ')
+            again = getpass.getpass('V83 Repeat password: ')
+        if password != again or not 12 <= len(password.encode('utf-8')) <= 128 or '\x00' in password:
+            password = again = None
+            print('V83 INVALID password: use 12..128 UTF-8 bytes and matching confirmation', flush=True)
+            continue
+        salt = base64.b64encode(secrets.token_bytes(12)).decode('ascii')
+        verifier = hashlib.pbkdf2_hmac('sha256', password.encode(), salt.encode(), 600000, dklen=24)
+        password = again = None
+        encoded = '$p$600000$' + salt + '$' + base64.b64encode(verifier).decode('ascii')
+        print(f'V83 Account: {name}, full name: {full_name}, UID/GID {uid}; groups window,audio,users; no administrator rights', flush=True)
+        answer = input('V83 Accept account? Type YES or EDIT: ')
+        if answer == 'YES':
+            return dict(name=name, full_name=full_name, uid=uid, gid=uid, verifier=encoded)
+        if answer != 'EDIT':
+            raise ValueError('account cancelled')
+
+
+def prepare(payload, work, account):
+    print('V83 CONFIGURING USER (destination untouched)', flush=True)
+    root = work / 'root.ext2'
+    with (payload / 'root.ext2').open('rb') as src, root.open('xb') as dest:
+        while data := src.read(1024 * 1024):
+            if data.count(0) == len(data):
+                dest.seek(len(data), 1)
+            else:
+                dest.write(data)
+        dest.truncate(src.tell())
+    name, uid, gid = account['name'], account['uid'], account['gid']
+    home = '/home/' + name
+    passwd = read(root, '/etc/passwd') + f'{name}:x:{uid}:{gid}:{account["full_name"]}:{home}:/bin/Shell\n'
+    shadow = read(root, '/etc/shadow') + f'{name}:{account["verifier"]}:0:0:99999:7:::\n'
+    lines = read(root, '/etc/group').splitlines()
+    for index, line in enumerate(lines):
+        fields = line.split(':')
+        if fields[0] in ['window', 'audio', 'users']:
+            fields[3] = ','.join(filter(None, [fields[3], name]))
+            lines[index] = ':'.join(fields)
+    group = '\n'.join(lines) + f'\n{name}:x:{gid}:\n'
+    config = read(root, '/etc/SystemServer.ini')
+    if config.count('Arguments=--auto-login anon') != 1:
+        raise ValueError('unexpected LoginServer factory configuration')
+    config = config.replace('Arguments=--auto-login anon', 'Arguments=')
+    def put(path, content, owner=0, group_id=0, mode=0o100600):
+        temporary = work / 'account-content'
+        temporary.write_text(content)
+        temporary.chmod(0o600)
+        debug(root, 'rm ' + path, True)
+        debug(root, f'write {temporary} {path}', True)
+        for field, value in [('uid', owner), ('gid', group_id), ('mode', mode)]:
+            debug(root, f'set_inode_field {path} {field} {value}', True)
+        if debug(root, 'cat ' + path) != content:
+            raise ValueError('account readback mismatch')
+        info = debug(root, 'stat ' + path)
+        permissions = re.search(r'Mode:\s+([0-7]+)', info)
+        if (not re.search(r'User:\s+' + str(owner) + r'\s+Group:\s+' + str(group_id), info)
+                or not permissions or int(permissions[1], 8) != mode & 0o7777):
+            raise ValueError('account file ownership or permissions mismatch')
+        temporary.unlink()
+    put('/etc/passwd', passwd, mode=0o100644)
+    put('/etc/shadow', shadow)
+    put('/etc/group', group, mode=0o100644)
+    put('/etc/SystemServer.ini', config, mode=0o100644)
+    # Factory demo accounts stay locked; protect their existing personal files.
+    debug(root, 'set_inode_field /home/anon mode 040700', True)
+    if '0700' not in debug(root, 'stat /home/anon'):
+        raise ValueError('factory home privacy mismatch')
+    for path in [home, *[home + '/' + d for d in ['Desktop', 'Documents', 'Downloads', 'Music', 'Pictures', 'Videos', '.config']]]:
+        debug(root, 'mkdir ' + path, True)
+        for field, value in [('uid', uid), ('gid', gid), ('mode', 0o40700)]:
+            debug(root, f'set_inode_field {path} {field} {value}', True)
+        info = debug(root, 'stat ' + path)
+        if not re.search(r'User:\s+' + str(uid) + r'\s+Group:\s+' + str(gid), info) or '0700' not in info:
+            raise ValueError('home ownership or mode mismatch')
+    put(home + '/.config/SystemServer.ini', '[Terminal]\nWorkingDirectory=' + home + '\n', uid, gid)
+    # Defense in depth: disabled factory accounts remain disabled, including root.
+    if any(line.split(':')[1] != '!' for line in shadow.splitlines() if line.split(':')[0] != name):
+        raise ValueError('unexpected enabled factory account')
+    subprocess.run(['e2fsck', '-f', '-n', str(root)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+    print('V83 USER VERIFIED; native LoginServer password login enabled', flush=True)
+    return root

@@ -34,7 +34,11 @@ static ErrorOr<ByteString> get_salt()
     fill_with_random({ random_data, sizeof(random_data) });
 
     StringBuilder builder;
+#ifdef AK_OS_SERENITY
+    builder.append("$p$600000$"sv);
+#else
     builder.append("$5$"sv);
+#endif
 
     auto salt_string = TRY(encode_base64({ random_data, sizeof(random_data) }));
     builder.append(salt_string);
@@ -172,7 +176,8 @@ bool Account::authenticate(SecretString const& password) const
     // FIXME: Use crypt_r if it can be built in lagom.
     auto const bytes = m_password_hash->characters();
     char* hash = crypt(password.characters(), bytes);
-    return hash != nullptr && AK::timing_safe_compare(hash, bytes, m_password_hash->length());
+    return hash != nullptr && strlen(hash) == m_password_hash->length()
+        && AK::timing_safe_compare(hash, bytes, m_password_hash->length());
 }
 
 ErrorOr<void> Account::login() const

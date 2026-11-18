@@ -46,12 +46,12 @@ class Monitor(qmp.Monitor):
 
 
 class Guest:
-    def __init__(self, directory, target, image=None, guard=None):
+    def __init__(self, directory, target, image=None, guard=None, memory='1G'):
         self.work = directory
         directory.mkdir()
         shutil.copyfile('/usr/share/OVMF/OVMF_VARS_4M.fd', directory / 'vars.fd')
         cmd = ['qemu-system-x86_64', '-machine', 'q35', '-accel', 'tcg', '-cpu', 'max,-x2apic',
-               '-m', '1G', '-smp', '1', '-display', 'none', '-vga', 'std', '-nic', 'none',
+               '-m', memory, '-smp', '1', '-display', 'none', '-vga', 'std', '-nic', 'none',
                '-drive', 'if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd',
                '-drive', 'if=pflash,format=raw,file=' + str(directory / 'vars.fd'),
                '-device', 'ich9-ahci,id=ahci', '-drive', 'if=none,id=target,format=raw,file=' + str(target),
@@ -99,7 +99,7 @@ class Guest:
             text = self.log()[offset:]
             if marker in text:
                 return text
-            if 'V82 REJECTED/FAILED:' in text:
+            if 'V82 REJECTED/FAILED:' in text or 'V83 FAILED:' in text:
                 raise RuntimeError(text[-3000:])
             if self.proc.poll() is not None or any(x in text for x in ['Kernel panic', 'KERNEL PANIC', 'CRASH: CPU']):
                 raise RuntimeError(text[-3000:])

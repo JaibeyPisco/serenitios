@@ -1,0 +1,24 @@
+#!/bin/python3
+# Copyright (c) 2026, the SerenityOS developers.
+# SPDX-License-Identifier: BSD-2-Clause
+import importlib.machinery
+import importlib.util
+import sys
+
+
+def load(name, path):
+    spec = importlib.util.spec_from_loader(name, importlib.machinery.SourceFileLoader(name, path))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+try:
+    backend = load('backend', '/bin/pisco-install-v82')
+    setup = load('setup', '/bin/pisco-user-setup')
+    backend.require(len(sys.argv) == 2, 'usage: pisco-install /dev/sdX')
+    backend.install(sys.argv[1], user_setup=setup)
+except Exception:
+    # Neither exceptions nor locals are printed: they may contain account input.
+    print('V83 FAILED: installation incomplete; no success recorded. Check disk eligibility or account setup.', flush=True)
+    sys.exit(1)
