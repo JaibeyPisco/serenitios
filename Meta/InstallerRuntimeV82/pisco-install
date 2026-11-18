@@ -1,0 +1,184 @@
+#!/bin/python3
+# Copyright (c) 2026, the SerenityOS developers.
+# SPDX-License-Identifier: BSD-2-Clause
+"""V8.2 deliberately virtual-only, empty-disk installer. Not a root sandbox."""
+import atexit
+import fcntl
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import shutil
+import stat
+import struct
+import subprocess
+import sys
+import tempfile
+import uuid
+import zlib
+
+MIB = 1024 * 1024
+PAYLOAD = Path('/media/pisco/payload')
+
+
+def require(condition, reason):
+    if not condition:
+        raise ValueError(reason)
+
+
+def digest(stream, offset, length):
+    stream.seek(offset)
+    value = hashlib.sha256()
+    while length:
+        data = stream.read(min(MIB, length))
+        require(data, 'short read')
+        value.update(data)
+        length -= len(data)
+    return value.hexdigest()
+
+
+def identity(device):
+    require(re.fullmatch(r'/dev/sd[a-z]+', device), 'only canonical whole SATA disks supported')
+    node = Path('/sys/class/block') / Path(device).name
+    require(node.exists() and not (node / 'partition').exists(), 'not a whole disk')
+    source = Path('/run/pisco/source').read_text().strip()
+    require(os.stat(device).st_rdev != os.stat(source).st_rdev, 'installer source')
+    require('usb' not in str(node.resolve()), 'USB targets forbidden in virtual prototype')
+    require(Path('/sys/class/dmi/id/sys_vendor').read_text().strip() == 'QEMU', 'QEMU only')
+    require((node / 'device/model').read_text().strip() == 'QEMU HARDDISK', 'not QEMU SATA')
+    def read_serial(entry):
+        page = (entry / 'device/vpd_pg80').read_bytes()
+        require(len(page) >= 4 and page[1] == 0x80, 'missing SCSI serial page')
+        length = int.from_bytes(page[2:4], 'big')
+        require(len(page) == 4 + length, 'invalid SCSI serial page')
+        return page[4:].decode('ascii').strip()
+    serial = read_serial(node)
+    authorized = [word.split('=', 1)[1] for word in Path('/proc/cmdline').read_text().split()
+                  if word.startswith('pisco_target_serial=')]
+    require(authorized == ['PISCO_V82_TARGET'] and serial == authorized[0], 'unauthorized serial')
+    matches = [read_serial(entry) for entry in Path('/sys/class/block').iterdir()
+               if (entry / 'device/vpd_pg80').exists() and not (entry / 'partition').exists()]
+    require(matches.count(serial) == 1, 'ambiguous serial')
+    require((node / 'ro').read_text().strip() == '0', 'read-only disk')
+    require((node / 'queue/logical_block_size').read_text().strip() == '512', '512-byte sectors only')
+    related = [node, *[p for p in node.iterdir() if (p / 'partition').exists()]]
+    mounted = {line.split()[2] for line in Path('/proc/self/mountinfo').read_text().splitlines()}
+    swaps = Path('/proc/swaps').read_text().splitlines()[1:]
+    for entry in related:
+        require((entry / 'dev').read_text().strip() not in mounted, 'mounted target or partition')
+        require(not list((entry / 'holders').iterdir()), 'device has holders')
+        for line in swaps:
+            require(os.stat(line.split()[0]).st_rdev != os.stat('/dev/' + entry.name).st_rdev, 'active swap')
+    require(len(related) == 1, 'existing partitions')
+    require(not list((node / 'slaves').iterdir()), 'stacked device')
+    size = int((node / 'size').read_text()) * 512
+    require(3 * 1024 * MIB <= size <= 16 * 1024 * MIB, 'virtual target must be 3..16 GiB')
+    return (os.stat(device).st_rdev, size, serial, str(node.resolve()))
+
+
+def run(*args):
+    subprocess.run(args, check=True)
+
+
+def install(device):
+    snapshot = identity(device)
+    size, serial = snapshot[1:3]
+    root_bytes = (PAYLOAD / 'root.ext2').stat().st_size
+    release = json.loads((PAYLOAD / 'release.json').read_text())
+    # Validate immutable source before requesting destructive confirmation.
+    for name, key in [('root.ext2', 'root_sha256'), ('Kernel.efi', 'kernel_efi_sha256')]:
+        with (PAYLOAD / name).open('rb') as stream:
+            require(digest(stream, 0, (PAYLOAD / name).stat().st_size) == release[key], 'payload checksum: ' + name)
+    print(f'V82 PLAN target={device} serial={serial} bytes={size}', flush=True)
+    print('ERASE empty target; GPT; 128 MiB FAT32 ESP; native ext2 root; remaining space reserved unallocated.', flush=True)
+    confirmation = f'INSTALL {device} {serial} {size}'
+    print('Type exactly: ' + confirmation, flush=True)
+    require(input() == confirmation, 'confirmation cancelled')
+    require(identity(device) == snapshot, 'identity changed')
+    # Hold a canonical block fd exclusively for the entire operation. All target
+    # writes use this one fd, never a partition name or a shell command.
+    fd = os.open(device, os.O_RDWR | os.O_EXCL | os.O_NOFOLLOW)
+    with os.fdopen(fd, 'r+b', buffering=0) as disk:
+        require(stat.S_ISBLK(os.fstat(fd).st_mode) and os.fstat(fd).st_rdev == snapshot[0], 'fd identity mismatch')
+        require(struct.unpack('Q', fcntl.ioctl(fd, 0x80081272, bytes(8)))[0] == size, 'size changed')
+        print('V82 ZERO SCAN', flush=True)
+        remaining = size
+        while remaining:
+            data = disk.read(min(4 * MIB, remaining))
+            require(data and data.count(0) == len(data), 'target not entirely zero')
+            remaining -= len(data)
+        require(identity(device) == snapshot, 'identity changed after scan')
+        root_id, disk_id = uuid.uuid4(), uuid.uuid4()
+        esp_start, esp_sectors = 2048, 128 * MIB // 512
+        root_start = esp_start + esp_sectors
+        root_sectors = (root_bytes + MIB - 1) // MIB * 2048
+        require((root_start + root_sectors + 34) * 512 < size, 'target too small')
+        work = Path(tempfile.mkdtemp(prefix='install-', dir='/run/pisco'))
+        atexit.register(shutil.rmtree, work)
+        esp = work / 'esp.fat'
+        with esp.open('wb') as stream:
+            stream.truncate(128 * MIB)
+        fat_id = uuid.uuid4().hex[:8]
+        run('mkfs.fat', '-F', '32', '-i', fat_id, '-n', 'PISCO_EFI', str(esp))
+        run('mmd', '-i', str(esp), '::/EFI', '::/EFI/BOOT', '::/EFI/PISCO')
+        cmdline = f'root=PARTUUID:{root_id} serial_debug\n'
+        (work / 'cmdline.txt').write_text(cmdline)
+        (work / 'grub.cfg').write_text('set timeout=0\nsearch --no-floppy --fs-uuid --set=root '
+            + fat_id[:4] + '-' + fat_id[4:] + '\nchainloader /EFI/PISCO/Kernel.efi ' + cmdline.strip() + '\nboot\n')
+        for source, target in [(Path('/boot/GRUB.EFI'), '::/EFI/BOOT/BOOTX64.EFI'),
+                               (PAYLOAD / 'Kernel.efi', '::/EFI/PISCO/Kernel.efi'),
+                               (work / 'grub.cfg', '::/EFI/BOOT/grub.cfg'),
+                               (work / 'cmdline.txt', '::/cmdline.txt')]:
+            run('mcopy', '-i', str(esp), str(source), target)
+        print('V82 WRITING PARTITIONS (GPT not published)', flush=True)
+        checks = []
+        for source, start in [(esp, esp_start), (PAYLOAD / 'root.ext2', root_start)]:
+            with source.open('rb') as stream:
+                expected = digest(stream, 0, source.stat().st_size)
+                stream.seek(0)
+                disk.seek(start * 512)
+                while data := stream.read(MIB):
+                    require(disk.write(data) == len(data), 'short write')
+            os.fsync(fd)
+            require(digest(disk, start * 512, source.stat().st_size) == expected, 'readback checksum failed')
+            checks.append(dict(start=start, bytes=source.stat().st_size, sha256=expected))
+        require(identity(device) == snapshot, 'identity changed before GPT')
+        entries = bytearray(16384)
+        for index, (kind, unique, start, count, label) in enumerate([
+                ('c12a7328-f81f-11d2-ba4b-00a0c93ec93b', uuid.uuid4(), esp_start, esp_sectors, 'PISCO EFI'),
+                ('0fc63daf-8483-4772-8e79-3d69d8477de4', root_id, root_start, root_sectors, 'PISCO native')]):
+            struct.pack_into('<16s16sQQQ72s', entries, index * 128, uuid.UUID(kind).bytes_le,
+                             unique.bytes_le, start, start + count - 1, 0, label.encode('utf-16le'))
+        last = size // 512 - 1
+        def header(current, backup, table):
+            value = bytearray(512)
+            struct.pack_into('<8sIIIIQQQQ16sQIII', value, 0, b'EFI PART', 0x10000, 92, 0, 0,
+                             current, backup, 34, last - 33, disk_id.bytes_le, table, 128, 128, zlib.crc32(entries))
+            struct.pack_into('<I', value, 16, zlib.crc32(value[:92]))
+            return value
+        mbr = bytearray(512)
+        struct.pack_into('<B3sB3sII', mbr, 446, 0, b'\0\x02\0', 0xee, b'\xff\xff\xff', 1, min(last, 0xffffffff))
+        mbr[510:] = b'\x55\xaa'
+        writes = [(last - 32, entries), (last, header(last, 1, last - 32)), (2, entries),
+                  (1, header(1, last, 2)), (0, mbr)]
+        for start, data in writes:
+            disk.seek(start * 512)
+            require(disk.write(data) == len(data), 'short GPT write')
+        os.fsync(fd)
+        for start, data in writes:
+            disk.seek(start * 512)
+            require(disk.read(len(data)) == data, 'GPT readback failed')
+        report = dict(target=device, identity=snapshot, root_partuuid=str(root_id), disk_uuid=str(disk_id),
+                      partitions=checks, native_kernel_sha256=release['kernel_efi_sha256'], completed=True)
+        (Path('/run/pisco') / 'installed.json').write_text(json.dumps(report, indent=2) + '\n')
+        print('V82 INSTALLED VERIFIED ' + json.dumps(report), flush=True)
+
+
+if __name__ == '__main__':
+    try:
+        require(len(sys.argv) == 2, 'usage: pisco-install /dev/sdX')
+        install(sys.argv[1])
+    except (ValueError, OSError, EOFError, subprocess.SubprocessError) as error:
+        print('V82 REJECTED/FAILED: ' + str(error), flush=True)
+        sys.exit(1)
