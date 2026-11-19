@@ -28,7 +28,7 @@ def read(image, path):
     return result
 
 
-def collect(payload):
+def account_identity(payload, full_name, name):
     passwd = read(payload / 'root.ext2', '/etc/passwd')
     groups = read(payload / 'root.ext2', '/etc/group')
     rows = [line.split(':') for line in passwd.splitlines()]
@@ -36,14 +36,34 @@ def collect(payload):
     names = {row[0] for row in rows} | {row[0] for row in group_rows}
     used_ids = {int(row[2]) for row in rows + group_rows}
     uid = next(value for value in range(1000, 60000) if value not in used_ids)
+    if not 1 <= len(full_name) <= 80 or any(ord(c) < 32 or c in ':\x7f' for c in full_name):
+        raise ValueError('full name')
+    if (not re.fullmatch(r'[a-z][a-z0-9_-]{0,30}', name) or name in names
+            or 'Inode:' in debug(payload / 'root.ext2', 'stat /home/' + name)):
+        raise ValueError('username')
+    return dict(name=name, full_name=full_name, uid=uid, gid=uid)
+
+
+def password_valid(password, again):
+    return password == again and 12 <= len(password.encode('utf-8')) <= 128 and '\x00' not in password
+
+
+def finish_account(identity, password):
+    salt = base64.b64encode(secrets.token_bytes(12)).decode('ascii')
+    verifier = hashlib.pbkdf2_hmac('sha256', password.encode(), salt.encode(), 600000, dklen=24)
+    return dict(identity, verifier='$p$600000$' + salt + '$' + base64.b64encode(verifier).decode('ascii'))
+
+
+def collect(payload):
     while True:
         full_name = input('V83 Full name: ').strip()
         if not 1 <= len(full_name) <= 80 or any(ord(c) < 32 or c in ':\x7f' for c in full_name):
             print('V83 INVALID full name', flush=True)
             continue
         name = input('V83 Username: ').strip()
-        if (not re.fullmatch(r'[a-z][a-z0-9_-]{0,30}', name) or name in names
-                or 'Inode:' in debug(payload / 'root.ext2', 'stat /home/' + name)):
+        try:
+            identity = account_identity(payload, full_name, name)
+        except ValueError:
             print('V83 INVALID or duplicate username', flush=True)
             continue
         # Fail closed rather than falling back to getpass's echoed stdin mode.
@@ -53,18 +73,16 @@ def collect(payload):
             warnings.simplefilter('error', getpass.GetPassWarning)
             password = getpass.getpass('V83 Password: ')
             again = getpass.getpass('V83 Repeat password: ')
-        if password != again or not 12 <= len(password.encode('utf-8')) <= 128 or '\x00' in password:
+        if not password_valid(password, again):
             password = again = None
             print('V83 INVALID password: use 12..128 UTF-8 bytes and matching confirmation', flush=True)
             continue
-        salt = base64.b64encode(secrets.token_bytes(12)).decode('ascii')
-        verifier = hashlib.pbkdf2_hmac('sha256', password.encode(), salt.encode(), 600000, dklen=24)
+        account = finish_account(identity, password)
         password = again = None
-        encoded = '$p$600000$' + salt + '$' + base64.b64encode(verifier).decode('ascii')
-        print(f'V83 Account: {name}, full name: {full_name}, UID/GID {uid}; groups window,audio,users; no administrator rights', flush=True)
+        print(f'V83 Account: {name}, full name: {full_name}, UID/GID {account["uid"]}; groups window,audio,users; no administrator rights', flush=True)
         answer = input('V83 Accept account? Type YES or EDIT: ')
         if answer == 'YES':
-            return dict(name=name, full_name=full_name, uid=uid, gid=uid, verifier=encoded)
+            return account
         if answer != 'EDIT':
             raise ValueError('account cancelled')
 

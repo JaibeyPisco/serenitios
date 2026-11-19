@@ -29,7 +29,10 @@ def main():
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--payload', type=Path, help='Verified derived payload; original V8.1 remains untouched')
     parser.add_argument('--user-setup', action='store_true', help='V8.3 mandatory native account setup')
+    parser.add_argument('--graphical', action='store_true', help='V8.4 automatic Xorg/Tk wizard')
     args = parser.parse_args()
+    if args.graphical and not args.user_setup:
+        raise ValueError('Graphical installation requires mandatory user setup')
     source = args.v81.resolve(strict=True)
     output = args.output.absolute()
     if output.exists() or output.is_symlink() or Path('/dev') in output.resolve().parents:
@@ -95,6 +98,9 @@ def main():
         binary(Path('/usr/lib/python3.12/lib-dynload') / extension.name)
     for name in ['mkfs.fat', 'mcopy', 'mmd', *(['debugfs', 'e2fsck'] if args.user_setup else [])]:
         binary(shutil.which(name), 'sbin/' + name)
+    if args.graphical:
+        graphics = load('graphics', REPO / 'Meta/build-pisco-graphical-runtime.py')
+        graphics.add_graphics(root, binary, source, output, v81)
     # mtools uses iconv even for the ASCII-only paths in the ESP. glibc loads
     # these conversion modules dynamically, so ldd cannot discover them.
     shutil.copytree('/usr/lib/x86_64-linux-gnu/gconv', root / 'usr/lib/x86_64-linux-gnu/gconv')
@@ -111,7 +117,7 @@ def main():
     medium_uuid = str(uuid.uuid4())
     data = output / 'data-root'
     data.mkdir()
-    (data / 'PISCO_INSTALLER_ID').write_text('PISCO-V83\n' if args.user_setup else 'PISCO-V82\n')
+    (data / 'PISCO_INSTALLER_ID').write_text('PISCO-V84\n' if args.graphical else ('PISCO-V83\n' if args.user_setup else 'PISCO-V82\n'))
     (data / 'payload').mkdir()
     for name in ['root.ext2', 'Kernel.efi', 'root-manifest.json', 'release.json', 'SHA256SUMS']:
         os.link(payload / name, data / 'payload' / name)
@@ -137,7 +143,7 @@ def main():
     sectors = ((gpt.ROOT_START + (output / 'data.ext2').stat().st_size // 512 + 33 + 2047) // 2048) * 2048
     plan = dict(disk_bytes=sectors * 512, disk_uuid=str(uuid.uuid4()), root_uuid=str(uuid.uuid4()),
                 root_sectors=(output / 'data.ext2').stat().st_size // 512)
-    image = output / ('pisco-installer-v83.img' if args.user_setup else 'pisco-installer-v82.img')
+    image = output / ('pisco-installer-v84.img' if args.graphical else ('pisco-installer-v83.img' if args.user_setup else 'pisco-installer-v82.img'))
     with image.open('w+b') as stream:
         stream.truncate(plan['disk_bytes'])
         gpt.write_partition_table(stream, plan)
@@ -151,6 +157,8 @@ def main():
     manifest['v82_backend_sha256'] = v81.sha(REPO / 'Meta/InstallerRuntimeV82/pisco-install')
     if args.user_setup:
         manifest['v83_sources'] = {p.name: v81.sha(p) for p in (REPO / 'Meta/InstallerRuntimeV83').iterdir() if p.is_file()}
+    if args.graphical:
+        manifest['v84_sources'] = {p.name: v81.sha(p) for p in (REPO / 'Meta/InstallerRuntimeV84').iterdir() if p.is_file()}
     manifest['gconv_inputs'] = {str(p.relative_to(root)): v81.sha(p)
                               for p in (root / 'usr/lib/x86_64-linux-gnu/gconv').rglob('*') if p.is_file()}
     (output / 'build-manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')

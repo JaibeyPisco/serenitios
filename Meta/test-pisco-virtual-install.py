@@ -46,7 +46,7 @@ class Monitor(qmp.Monitor):
 
 
 class Guest:
-    def __init__(self, directory, target, image=None, guard=None, memory='1G'):
+    def __init__(self, directory, target, image=None, guard=None, memory='1G', tablet=False):
         self.work = directory
         directory.mkdir()
         shutil.copyfile('/usr/share/OVMF/OVMF_VARS_4M.fd', directory / 'vars.fd')
@@ -68,6 +68,9 @@ class Guest:
         if guard:
             cmd += ['-drive', 'if=none,id=guard,format=raw,file=' + str(guard),
                     '-device', 'ide-hd,drive=guard,bus=ahci.1,serial=PISCO_V82_GUARD']
+        if tablet:
+            cmd = [item + ',id=installer_usb,removable=on' if item.startswith('usb-storage,') else item for item in cmd]
+            cmd += ['-device', 'usb-tablet,bus=xhci.0']
         (directory / 'command.json').write_text(json.dumps(cmd, indent=2))
         self.output = (directory / 'qemu.log').open('w')
         self.proc = subprocess.Popen(cmd, stdout=self.output, stderr=self.output)

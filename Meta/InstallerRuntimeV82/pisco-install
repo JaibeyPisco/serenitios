@@ -2,7 +2,7 @@
 # Copyright (c) 2026, the SerenityOS developers.
 # SPDX-License-Identifier: BSD-2-Clause
 """V8.2 deliberately virtual-only, empty-disk installer. Not a root sandbox."""
-import atexit
+import contextlib
 import fcntl
 import hashlib
 import json
@@ -81,7 +81,14 @@ def run(*args):
     subprocess.run(args, check=True)
 
 
-def install(device, user_setup=None):
+def install(device, user_setup=None, confirm=None, progress=None):
+    with contextlib.ExitStack() as cleanup:
+        return _install(device, user_setup, confirm, progress, cleanup)
+
+
+def _install(device, user_setup, confirm, progress, cleanup):
+    notify = progress or (lambda stage: None)
+    notify('payload')
     snapshot = identity(device)
     size, serial = snapshot[1:3]
     root_bytes = (PAYLOAD / 'root.ext2').stat().st_size
@@ -96,7 +103,7 @@ def install(device, user_setup=None):
     print('ERASE empty target; GPT; 128 MiB FAT32 ESP; native ext2 root; remaining space reserved unallocated.', flush=True)
     confirmation = f'INSTALL {device} {serial} {size}'
     print('Type exactly: ' + confirmation, flush=True)
-    require(input() == confirmation, 'confirmation cancelled')
+    require(confirm(device, snapshot, confirmation) if confirm else input() == confirmation, 'confirmation cancelled')
     require(identity(device) == snapshot, 'identity changed')
     # Hold a canonical block fd exclusively for the entire operation. All target
     # writes use this one fd, never a partition name or a shell command.
@@ -105,6 +112,7 @@ def install(device, user_setup=None):
         require(stat.S_ISBLK(os.fstat(fd).st_mode) and os.fstat(fd).st_rdev == snapshot[0], 'fd identity mismatch')
         require(struct.unpack('Q', fcntl.ioctl(fd, 0x80081272, bytes(8)))[0] == size, 'size changed')
         print('V82 ZERO SCAN', flush=True)
+        notify('zero-scan')
         remaining = size
         while remaining:
             data = disk.read(min(4 * MIB, remaining))
@@ -117,8 +125,10 @@ def install(device, user_setup=None):
         root_sectors = (root_bytes + MIB - 1) // MIB * 2048
         require((root_start + root_sectors + 34) * 512 < size, 'target too small')
         work = Path(tempfile.mkdtemp(prefix='install-', dir='/run/pisco'))
-        atexit.register(shutil.rmtree, work)
+        cleanup.callback(shutil.rmtree, work)
+        notify('account')
         system_root = user_setup.prepare(PAYLOAD, work, account) if user_setup else PAYLOAD / 'root.ext2'
+        notify('bootloader')
         esp = work / 'esp.fat'
         with esp.open('wb') as stream:
             stream.truncate(128 * MIB)
@@ -137,6 +147,7 @@ def install(device, user_setup=None):
         print('V82 WRITING PARTITIONS (GPT not published)', flush=True)
         checks = []
         for source, start in [(esp, esp_start), (system_root, root_start)]:
+            notify('copy-esp' if start == esp_start else 'copy-root')
             with source.open('rb') as stream:
                 expected = digest(stream, 0, source.stat().st_size)
                 stream.seek(0)
@@ -144,9 +155,11 @@ def install(device, user_setup=None):
                 while data := stream.read(MIB):
                     require(disk.write(data) == len(data), 'short write')
             os.fsync(fd)
+            notify('verify-esp' if start == esp_start else 'verify-root')
             require(digest(disk, start * 512, source.stat().st_size) == expected, 'readback checksum failed')
             checks.append(dict(start=start, bytes=source.stat().st_size, sha256=expected))
         require(identity(device) == snapshot, 'identity changed before GPT')
+        notify('gpt')
         entries = bytearray(16384)
         for index, (kind, unique, start, count, label) in enumerate([
                 ('c12a7328-f81f-11d2-ba4b-00a0c93ec93b', uuid.uuid4(), esp_start, esp_sectors, 'PISCO EFI'),
@@ -169,6 +182,7 @@ def install(device, user_setup=None):
             disk.seek(start * 512)
             require(disk.write(data) == len(data), 'short GPT write')
         os.fsync(fd)
+        notify('verify-gpt')
         for start, data in writes:
             disk.seek(start * 512)
             require(disk.read(len(data)) == data, 'GPT readback failed')
@@ -178,6 +192,8 @@ def install(device, user_setup=None):
             report['user'] = dict(name=account['name'], uid=account['uid'], gid=account['gid'])
         (Path('/run/pisco') / 'installed.json').write_text(json.dumps(report, indent=2) + '\n')
         print('V82 INSTALLED VERIFIED ' + json.dumps(report), flush=True)
+        notify('complete')
+        return report
 
 
 if __name__ == '__main__':

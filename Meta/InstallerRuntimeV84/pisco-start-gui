@@ -1,0 +1,77 @@
+#!/bin/python3
+# Copyright (c) 2026, the SerenityOS developers.
+# SPDX-License-Identifier: BSD-2-Clause
+import os
+from pathlib import Path
+import subprocess
+import time
+
+inputs = {}
+for entry in Path('/sys/class/input').glob('event*'):
+    name = (entry / 'device/name').read_text().strip()
+    if name == 'AT Translated Set 2 keyboard':
+        inputs['keyboard'] = '/dev/input/' + entry.name
+    if name in ['QEMU USB Tablet', 'QEMU QEMU USB Tablet']:
+        inputs['pointer'] = '/dev/input/' + entry.name
+if len(inputs) != 2:
+    raise SystemExit('V84 GRAPHICS FAILED: required keyboard/tablet not available; no disk writes')
+config = '''Section "ServerFlags"
+ Option "AutoAddDevices" "false"
+ Option "AllowMouseOpenFail" "false"
+EndSection
+Section "Module"
+ Disable "glx"
+EndSection
+Section "Files"
+ FontPath "/usr/share/fonts/X11/misc"
+EndSection
+Section "Device"
+ Identifier "Framebuffer"
+ Driver "modesetting"
+ Option "kmsdev" "/dev/dri/card0"
+ Option "AccelMethod" "none"
+ Option "SWcursor" "true"
+EndSection
+Section "Screen"
+ Identifier "Screen"
+ Device "Framebuffer"
+ DefaultDepth 24
+EndSection
+'''
+for kind, device in inputs.items():
+    config += f'''Section "InputDevice"
+ Identifier "{kind}"
+ Driver "evdev"
+ Option "Device" "{device}"
+ Option "XkbLayout" "us"
+EndSection
+'''
+config += '''Section "ServerLayout"
+ Identifier "Layout"
+ Screen "Screen"
+ InputDevice "keyboard" "CoreKeyboard"
+ InputDevice "pointer" "CorePointer"
+EndSection
+'''
+Path('/run/pisco/xorg.conf').write_text(config)
+with open('/run/pisco/xserver.log', 'w') as log:
+    server = subprocess.Popen(['/usr/lib/xorg/Xorg', ':0', 'vt1', '-ac', '-noreset', '-nolisten', 'tcp',
+        '-config', '/run/pisco/xorg.conf', '-logfile', '/run/pisco/Xorg.log'], stdout=log, stderr=log)
+    for attempt in range(100):
+        if Path('/tmp/.X11-unix/X0').exists():
+            break
+        if server.poll() is not None:
+            print(Path('/run/pisco/Xorg.log').read_text(errors='replace')[-6000:], flush=True)
+            raise SystemExit('V84 GRAPHICS FAILED: Xorg did not start; no disk writes')
+        time.sleep(.1)
+    os.environ['DISPLAY'] = ':0'
+    os.environ['PYTHONDONTWRITEBYTECODE'] = '1'
+    time.sleep(2)
+    try:
+        subprocess.run(['/bin/python3', '/bin/pisco-wizard'], check=True)
+    except subprocess.CalledProcessError:
+        print(Path('/run/pisco/Xorg.log').read_text(errors='replace')[-10000:], flush=True)
+    finally:
+        if server.poll() is None:
+            server.terminate()
+        server.wait(timeout=10)

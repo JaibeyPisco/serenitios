@@ -1,0 +1,250 @@
+#!/bin/python3
+# Copyright (c) 2026, the SerenityOS developers.
+# SPDX-License-Identifier: BSD-2-Clause
+"""Five-page Tk installer. Disk and account operations remain in V8.2/V8.3."""
+import importlib.machinery
+import importlib.util
+from pathlib import Path
+import queue
+import subprocess
+import threading
+import tkinter as tk
+from tkinter import ttk
+from types import SimpleNamespace
+
+
+def load(name, path):
+    spec = importlib.util.spec_from_loader(name, importlib.machinery.SourceFileLoader(name, path))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+backend = load('backend', '/bin/pisco-install-v82')
+setup = load('setup', '/bin/pisco-user-setup')
+STAGES = {
+    'payload': 'Verificando la integridad del sistema de origen…',
+    'zero-scan': 'Comprobando todos los bytes del disco de destino…',
+    'account': 'Creando la cuenta y verificando sus permisos en RAM…',
+    'bootloader': 'Preparando GRUB UEFI y el arranque nativo…',
+    'copy-esp': 'Copiando la partición de arranque…',
+    'verify-esp': 'Verificando la copia de la partición de arranque…',
+    'copy-root': 'Copiando PISCO OS y su cuenta de usuario…',
+    'verify-root': 'Verificando la copia completa del sistema…',
+    'gpt': 'Publicando las tablas de particiones verificadas…',
+    'verify-gpt': 'Comprobando ambas tablas GPT…',
+    'complete': 'Instalación y verificación completadas.',
+}
+
+
+class Wizard:
+    def __init__(self):
+        self.root = tk.Tk()
+        self.root.title('Instalar PISCO OS')
+        self.root.overrideredirect(True)
+        self.w, self.h = self.root.winfo_screenwidth(), self.root.winfo_screenheight()
+        self.root.geometry(f'{self.w}x{self.h}+0+0')
+        self.root.configure(bg='#101b30')
+        style = ttk.Style()
+        style.theme_use('clam')
+        style.configure('.', font=('DejaVu Sans', 12))
+        self.values = [tk.StringVar() for _ in range(4)]
+        self.confirmed = tk.BooleanVar(value=False)
+        self.disk = None
+        self.snapshot = None
+        self.busy = False
+        self.events = queue.Queue()
+        self.root.protocol('WM_DELETE_WINDOW', lambda: None)
+        self.show(0)
+        self.root.after(100, self.poll)
+        print('V84 GUI READY', flush=True)
+
+    def label(self, text, x, y, size=13, color='#dce5f5', width=None):
+        item = tk.Label(self.root, text=text, bg='#101b30', fg=color,
+                        font=('DejaVu Sans', size), anchor='w', justify='left', wraplength=width or self.w-100)
+        item.place(x=x, y=y)
+        return item
+
+    def button(self, text, x, command, state='normal'):
+        item = ttk.Button(self.root, text=text, command=command, state=state)
+        item.place(x=x, y=self.h-70, width=180, height=40)
+        return item
+
+    def show(self, page):
+        for child in self.root.winfo_children():
+            child.destroy()
+        self.page = page
+        self.label('PISCO OS', 40, 32, 25)
+        self.label(['1 · Bienvenida', '2 · Disco de destino', '3 · Su cuenta',
+                    '4 · Confirmación e instalación', '5 · Finalización'][page], 40, 100, 21)
+        if page == 0:
+            self.label('Instale PISCO OS en un disco virtual independiente.', 40, 210, 17)
+            self.label('Este asistente prepara el arranque UEFI y crea su cuenta.\n'
+                       'El sistema instalado utiliza el kernel nativo de PISCO OS.\n\n'
+                       'Esta versión sólo admite discos virtuales QEMU autorizados y vacíos.\n'
+                       'No se escribirán datos hasta que confirme el destino.', 40, 280)
+            self.button('Comenzar', self.w-220, lambda: self.show(1))
+        elif page == 1:
+            self.disk = self.snapshot = None
+            self.label('Seleccione un disco. El USB y los destinos no autorizados se excluyen.', 40, 160)
+            self.table = ttk.Treeview(self.root, columns=('path', 'size', 'serial'), show='headings', selectmode='browse')
+            for key, title in [('path', 'Dispositivo'), ('size', 'Tamaño'), ('serial', 'Identificador')]:
+                self.table.heading(key, text=title)
+                self.table.column(key, width=(self.w-100)//3)
+            self.table.place(x=40, y=215, width=self.w-80, height=290)
+            self.disks = {}
+            for node in sorted(Path('/sys/class/block').iterdir()):
+                device = '/dev/' + node.name
+                try:
+                    snapshot = backend.identity(device)
+                except (ValueError, OSError):
+                    continue
+                self.disks[device] = snapshot
+                self.table.insert('', 'end', iid=device, values=(device, f'{snapshot[1]/1024**3:.1f} GiB', snapshot[2]))
+            self.label('El contenido íntegramente vacío se verifica de nuevo antes de copiar.'
+                       if self.disks else 'No hay discos compatibles. Conecte un destino virtual autorizado y vacío.', 40, 535)
+            self.button('Actualizar', 40, lambda: self.show(1))
+            self.next = self.button('Continuar', self.w-220, self.select_disk, 'disabled')
+            self.table.bind('<<TreeviewSelect>>', lambda event: self.next.configure(state='normal' if self.table.selection() else 'disabled'))
+            self.button('Cancelar', self.w-420, self.cancel)
+        elif page == 2:
+            for index, title in enumerate(['Nombre completo', 'Usuario', 'Contraseña', 'Repetir contraseña']):
+                self.label(title, 55, 225+70*index)
+                entry = ttk.Entry(self.root, textvariable=self.values[index], show='•' if index >= 2 else '')
+                entry.place(x=310, y=220+70*index, width=self.w-380, height=38)
+                if index == 0:
+                    entry.focus_set()
+            self.label('Usuario: minúsculas, dígitos, guion o guion bajo. Contraseña: 12–128 bytes UTF-8.', 55, 520, 11)
+            self.error = self.label('', 55, 570, color='#ffb7a8')
+            self.button('Atrás', 40, lambda: self.show(1))
+            self.button('Cancelar', self.w-420, self.cancel)
+            self.button('Continuar', self.w-220, self.validate_user)
+        elif page == 3:
+            self.confirmed.set(False)
+            self.label(f'Destino: {self.disk}\nIdentificador: {self.snapshot[2]}\nTamaño: {self.snapshot[1]} bytes\n'
+                       f'Cuenta: {self.identity["name"]} · {self.identity["full_name"]}', 55, 190, 14)
+            self.label('Operaciones: GPT, partición EFI, sistema PISCO OS y cuenta privada.\n'
+                       'Los datos del destino seleccionado se sustituirán. El USB queda protegido.', 55, 340)
+            check = ttk.Checkbutton(self.root, text='Confirmo este disco y autorizo borrar su contenido.', variable=self.confirmed,
+                                    command=lambda: self.start_button.configure(state='normal' if self.confirmed.get() else 'disabled'))
+            check.place(x=55, y=430)
+            self.status = self.label('', 55, 490)
+            self.history = self.label('', 55, 540, 11)
+            self.back = self.button('Atrás', 40, lambda: self.show(2))
+            self.cancel_button = self.button('Cancelar', self.w-420, self.cancel)
+            self.start_button = self.button('Borrar e instalar', self.w-220, self.start, 'disabled')
+        else:
+            self.label('PISCO OS se instaló y verificó correctamente.', 55, 210, 18)
+            self.label(f'Cuenta creada: {self.identity["name"]}\n'
+                       'Al iniciar sesión, introduzca la contraseña que eligió.', 55, 280)
+            self.removal = self.label('Retire el medio USB para iniciar desde el disco instalado.', 55, 380)
+            self.restart = self.button('Reiniciar', self.w-220, lambda: subprocess.run(['reboot', '-f']), 'disabled')
+            self.button('Apagar', self.w-420, lambda: subprocess.run(['poweroff', '-f']))
+            self.check_removal()
+        print(f'V84 PAGE {page}', flush=True)
+
+    def select_disk(self):
+        selection = self.table.selection()
+        if not selection:
+            return
+        self.disk = selection[0]
+        self.snapshot = self.disks[self.disk]
+        self.show(2)
+
+    def validate_user(self):
+        full_name, name, password, again = [v.get() for v in self.values]
+        if not setup.password_valid(password, again):
+            self.error.configure(text='Las contraseñas deben coincidir y tener entre 12 y 128 bytes.')
+            print('V84 VALIDATION password', flush=True)
+            return
+        try:
+            self.identity = setup.account_identity(backend.PAYLOAD, full_name.strip(), name.strip())
+        except ValueError:
+            self.error.configure(text='Nombre o usuario inválido, ya existente o reservado. Corrija los datos.')
+            print('V84 VALIDATION identity', flush=True)
+            return
+        except Exception:
+            self.error.configure(text='No se pudo comprobar la cuenta de origen. Reinicie con un medio íntegro.')
+            return
+        self.show(3)
+
+    def cancel(self):
+        if self.busy:
+            return
+        for value in self.values:
+            value.set('')
+        self.disk = self.snapshot = None
+        self.show(0)
+        print('V84 CANCELLED before writes', flush=True)
+
+    def start(self):
+        if self.busy or not self.confirmed.get() or not self.disk:
+            return
+        self.busy = True
+        approved, identity, password = (self.disk, self.snapshot), self.identity.copy(), self.values[2].get()
+        for value in self.values:
+            value.set('')
+        for item in [self.back, self.cancel_button, self.start_button]:
+            item.configure(state='disabled')
+        # Freeze the confirmation and all controls while a write is in progress.
+        for child in self.root.winfo_children():
+            if isinstance(child, ttk.Checkbutton):
+                child.configure(state='disabled')
+        def worker():
+            nonlocal password
+            def collect(payload):
+                nonlocal password
+                current = setup.account_identity(payload, identity['full_name'], identity['name'])
+                if current != identity:
+                    raise ValueError('account identity changed')
+                account = setup.finish_account(identity, password)
+                password = None
+                return account
+            try:
+                backend.install(approved[0], user_setup=SimpleNamespace(collect=collect, prepare=setup.prepare),
+                    confirm=lambda device, snapshot, token: (device, snapshot) == approved,
+                    progress=lambda stage: self.events.put(('stage', stage)))
+                self.events.put(('success', None))
+            except Exception:
+                # Exceptions can hold account input; never log their contents.
+                self.events.put(('error', None))
+            finally:
+                password = None
+        threading.Thread(target=worker, daemon=True).start()
+
+    def poll(self):
+        try:
+            while True:
+                kind, value = self.events.get_nowait()
+                if kind == 'stage':
+                    self.status.configure(text=STAGES[value])
+                    self.history.configure(text='Operación real del instalador; espere a la verificación final.')
+                    print('V84 STAGE ' + value, flush=True)
+                elif kind == 'success':
+                    self.busy = False
+                    self.show(4)
+                elif kind == 'error':
+                    self.busy = False
+                    self.status.configure(text='No se completó la instalación. No arranque desde este destino.', fg='#ffb7a8')
+                    self.history.configure(text='Revise el medio y los recursos de la VM. Si hubo copia parcial, use otro disco vacío.\n'
+                                           'Puede volver a detectar discos; no se borrará ni reparará nada automáticamente.')
+                    self.back.configure(text='Volver a discos', state='normal', command=lambda: self.show(1))
+                    self.cancel_button.configure(state='normal')
+                    print('V84 ERROR installation incomplete', flush=True)
+        except queue.Empty:
+            pass
+        self.root.after(100, self.poll)
+
+    def check_removal(self):
+        if self.page != 4:
+            return
+        source = Path('/run/pisco/source').read_text().strip()
+        if not Path(source).exists():
+            self.removal.configure(text='USB retirado. Ya puede reiniciar desde el disco instalado.')
+            self.restart.configure(state='normal')
+        else:
+            self.root.after(1000, self.check_removal)
+
+
+if __name__ == '__main__':
+    Wizard().root.mainloop()
