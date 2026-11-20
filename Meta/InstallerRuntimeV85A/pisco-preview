@@ -1,0 +1,100 @@
+#!/bin/python3
+# Copyright (c) 2026, the SerenityOS developers.
+# SPDX-License-Identifier: BSD-2-Clause
+import hashlib
+import json
+from pathlib import Path
+import queue
+import subprocess
+import threading
+import tkinter as tk
+from tkinter import ttk
+import pisco_preview_policy as policy
+
+config = json.loads(Path('/etc/pisco-preview.json').read_text())
+source = Path('/run/pisco/source').read_text().strip()
+root = tk.Tk()
+root.overrideredirect(True)
+w, h = root.winfo_screenwidth(), root.winfo_screenheight()
+root.geometry(f'{w}x{h}+0+0')
+root.configure(bg='#101b30')
+ttk.Style().configure('.', font=('DejaVu Sans', 11))
+def label(text, x, y, size=12, color='#dce5f5'):
+    item = tk.Label(root, text=text, bg='#101b30', fg=color, font=('DejaVu Sans', size), anchor='w', justify='left', wraplength=w-90)
+    item.place(x=x, y=y)
+    return item
+label('PISCO OS V8.5A · Prueba de arranque UEFI', 35, 25, 23)
+label('SIN INSTALACIÓN · Discos protegidos en sólo lectura', 35, 80, 17, '#9fe4b0')
+label('Este entorno Linux comprueba pantalla, entrada y almacenamiento. El kernel nativo incluido no se ejecuta.\n'
+      'No hay selección de destino, creación de cuenta, particionado ni instalación física autorizada.', 35, 125)
+table = ttk.Treeview(root, columns=('device', 'size', 'kind', 'role'), show='headings', selectmode='none')
+for name, title in [('device', 'Dispositivo'), ('size', 'Tamaño'), ('kind', 'Modelo / conexión'), ('role', 'Protección')]:
+    table.heading(name, text=title)
+    table.column(name, width=(w-80)//4)
+table.place(x=35, y=205, width=w-70, height=220)
+status = label('Comprobando la protección…', 35, 445)
+label('Prueba de teclado (texto sólo en RAM, no se guarda):', 35, 490)
+entry = ttk.Entry(root)
+entry.place(x=35, y=525, width=w-70, height=35)
+entry.focus_set()
+payload_status = label('Payload nativo V7.3 + autenticación V8.3 incluido. Instalación deshabilitada.', 35, 580)
+events = queue.Queue()
+checking = False
+
+def refresh():
+    try:
+        rows = policy.save_state(source)
+        for item in table.get_children():
+            table.delete(item)
+        for row in rows:
+            role = 'USB de prueba · excluido' if row['role'] == 'installer-source-excluded' else 'Sólo lectura · no autorizado'
+            table.insert('', 'end', values=(row['device'], f'{row["bytes"]/1024**3:.2f} GiB', row['model']+' / '+row['transport'], role))
+        status.configure(text='Protección verificada: kernel en modo sólo lectura para todos los discos.', fg='#9fe4b0')
+        print('V85A POLICY VERIFIED ' + json.dumps(dict(source=source, disks=rows)), flush=True)
+    except Exception:
+        status.configure(text='Protección no verificada. No continúe la prueba; apague el equipo.', fg='#ffb7a8')
+        print('V85A SAFETY FAILURE', flush=True)
+    root.after(2000, refresh)
+
+def verify():
+    global checking
+    if checking:
+        return
+    checking = True
+    payload_status.configure(text='Leyendo y verificando el payload del USB…')
+    def worker():
+        try:
+            for name, key in [('root.ext2', 'root_sha256'), ('Kernel.efi', 'kernel_efi_sha256')]:
+                with (Path('/media/pisco/payload') / name).open('rb') as stream:
+                    if hashlib.file_digest(stream, 'sha256').hexdigest() != config['payload'][key]:
+                        raise ValueError('checksum')
+            events.put(True)
+        except Exception:
+            events.put(False)
+    threading.Thread(target=worker, daemon=True).start()
+
+def blocked():
+    result = subprocess.run(['/bin/pisco-install', source], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if result.returncode == 64:
+        payload_status.configure(text='Bloqueo confirmado: este medio no incluye un instalador activo.')
+        print('V85A INSTALL BLOCK VERIFIED', flush=True)
+
+def poll():
+    global checking
+    try:
+        ok = events.get_nowait()
+        payload_status.configure(text='Payload verificado por SHA-256. Sin escrituras.' if ok else 'Falló la lectura del payload. No use este medio.')
+        checking = False
+        print('V85A PAYLOAD VERIFIED' if ok else 'V85A PAYLOAD FAILED', flush=True)
+    except queue.Empty:
+        pass
+    root.after(100, poll)
+
+for text, x, command in [('Verificar payload', 35, verify), ('Comprobar bloqueo', 255, blocked),
+                         ('Reiniciar', w-435, lambda: subprocess.run(['reboot', '-f'])),
+                         ('Apagar', w-220, lambda: subprocess.run(['poweroff', '-f']))]:
+    ttk.Button(root, text=text, command=command).place(x=x, y=h-65, width=195, height=38)
+root.after(100, refresh)
+root.after(100, poll)
+print('V85A GUI READY', flush=True)
+root.mainloop()
